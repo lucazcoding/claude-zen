@@ -3,17 +3,64 @@
     "host": "127.0.0.1",
     "port": 8787
   },
-  "upstream": {
-    "baseUrl": "https://opencode.ai/zen/v1"
+
+  "routing": {
+    "mode": "auto",
+    "largeContextThreshold": 100000,
+
+    "normalProvider": "apinex",
+    "largeContextProvider": "gemini",
+
+    "fallbackOrder": [
+      "apinex",
+      "gemini",
+      "openrouter"
+    ],
+
+    "cooldownSeconds": 300
   },
-  "models": [
-    "deepseek-v4-flash-free"
-  ],
+
+  "providers": {
+    "apinex": {
+      "name": "APInex",
+      "baseUrl": "https://api.apinex.bond/v1",
+      "model": "free/mimo-v2.6-pro",
+      "apiKeyEnv": "APINEX_API_KEY",
+      "timeoutMs": 600000
+    },
+
+    "gemini": {
+      "name": "Google Gemini",
+      "baseUrl": "https://generativelanguage.googleapis.com/v1beta/openai",
+      "model": "gemini-3.8-flash",
+      "apiKeyEnv": "GEMINI_API_KEY",
+      "timeoutMs": 600000
+    },
+
+    "openrouter": {
+      "name": "OpenRouter",
+      "baseUrl": "https://openrouter.ai/api/v1",
+      "model": "qwen/qwen3.8-27b:free",
+      "apiKeyEnv": "OPENROUTER_API_KEY",
+      "timeoutMs": 600000
+    }
+  },
+
   "reasoningContent": "auto",
+
   "reasoningCacheMaxEntries": 0,
+
   "reasoningCacheMaxAgeMs": 2592000000,
+
   "reasoningCacheMaxSizeBytes": 209715200,
+
   "reasoningCachePath": "~/.claude/deepseek-v4-opencode-claude-code-bridge-reasoning-cache.json",
+
   "requestBodyLimitBytes": 104857600,
-  "upstreamTimeoutMs": 600000
+
+  "upstreamTimeoutMs": 600000,
+
+  "models": [
+    "qwen/qwen3.8-27b:free"
+  ]
 }

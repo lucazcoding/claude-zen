@@ -3,6 +3,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { createRouter } = require("./router");
 
 const DEFAULT_BASE_URL = "https://opencode.ai/zen/go/v1";
 const DEFAULT_MODELS = ["deepseek-v4-pro[1m]", "deepseek-v4-flash"];
@@ -163,6 +164,90 @@ function loadConfig() {
     models: Array.isArray(fileConfig.models) && fileConfig.models.length
       ? fileConfig.models
       : DEFAULT_MODELS,
+    
+    routing: {
+      mode: String(
+        configValue(
+          fileConfig,
+          ["routing", "mode"],
+          "auto",
+        ),
+      ).toLowerCase(),
+
+      largeContextThreshold: numberConfig(
+        "routing.largeContextThreshold",
+        configValue(
+          fileConfig,
+          ["routing", "largeContextThreshold"],
+          100000,
+        ),
+        100000,
+        {
+          integer: true,
+          min: 1,
+        },
+      ),
+
+      normalProvider: String(
+        configValue(
+          fileConfig,
+          ["routing", "normalProvider"],
+          "apinex",
+        ),
+      ),
+
+      largeContextProvider: String(
+        configValue(
+          fileConfig,
+          ["routing", "largeContextProvider"],
+          "gemini",
+        ),
+      ),
+
+      fallbackOrder:
+        Array.isArray(
+          configValue(
+            fileConfig,
+            ["routing", "fallbackOrder"],
+            null,
+          ),
+        )
+          ? configValue(
+              fileConfig,
+              ["routing", "fallbackOrder"],
+              [],
+            )
+          : ["apinex", "gemini", "openrouter"],
+
+      cooldownSeconds: numberConfig(
+        "routing.cooldownSeconds",
+        configValue(
+          fileConfig,
+          ["routing", "cooldownSeconds"],
+          300,
+        ),
+        300,
+        {
+          integer: true,
+          min: 0,
+        },
+      ),
+    },
+
+    providers: configValue(
+      fileConfig,
+      ["providers"],
+      {},
+    ),
+
+    routingStatePath: resolveMaybeRelative(
+      configValue(
+        fileConfig,
+        ["routingStatePath"],
+        "./routing-state.json",
+      ),
+      configDir,
+    ),
   };
 }
 
@@ -172,6 +257,7 @@ function normalizeBaseUrl(url) {
 }
 
 const CONFIG = loadConfig();
+const ROUTER = createRouter(CONFIG);
 const reasoningByToolCallId = new Map();
 const reasoningByAssistantText = new Map();
 const reasoningByToolContext = new Map();
@@ -1011,36 +1097,16 @@ function requestProcessShutdown(server) {
   });
 }
 
-async function callOpenCode(req, payload, upstreamContext) {
-  const upstreamApiKey = requestAuthToken(req);
-  if (!upstreamApiKey) {
-    throw new Error(
-      "Upstream API key is not set. Put your OpenCode Go key in Claude Code settings as ANTHROPIC_API_KEY.",
-    );
-  }
-
-  const response = await fetch(`${CONFIG.upstreamBaseUrl}/chat/completions`, {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${upstreamApiKey}`,
-      "content-type": "application/json",
-    },
-    signal: upstreamContext.signal,
-    body: JSON.stringify(payload),
-  }).catch((error) => {
-    if (upstreamContext.signal.aborted) throw makeAbortError(upstreamContext);
-    throw error;
-  });
-
-  if (!response.ok) {
-    const text = await response.text();
-    console.error(`Upstream payload summary: ${JSON.stringify(payloadDebugSummary(payload))}`);
-    const error = new Error(`OpenCode Go returned ${response.status}: ${text}`);
-    error.status = response.status;
-    throw error;
-  }
-
-  return response;
+async function callOpenCode(
+  req,
+  payload,
+  upstreamContext,
+) {
+  return ROUTER.call(
+    req,
+    payload,
+    upstreamContext,
+  );
 }
 
 function sse(res, event, data) {
@@ -1392,43 +1458,137 @@ async function streamOpenAiAsAnthropic(upstream, res, model, toolContextParts = 
 
 async function handleMessages(req, res) {
   const body = await readJsonBody(req);
-  const wantsStream = body.stream === true;
-  const toolContextParts = currentToolContextParts(body.messages);
-  const payload = anthropicToOpenAi(body, wantsStream);
-  const upstreamContext = createUpstreamContext(res);
+
+  const wantsStream =
+    body.stream === true;
+
+  const toolContextParts =
+    currentToolContextParts(
+      body.messages,
+    );
+
+  const payload =
+    anthropicToOpenAi(
+      body,
+      wantsStream,
+    );
+
+  const upstreamContext =
+    createUpstreamContext(res);
+
   let upstream;
+  let routed;
 
   try {
-    upstream = await callOpenCode(req, payload, upstreamContext);
+    routed = await callOpenCode(
+      req,
+      payload,
+      upstreamContext,
+    );
+
+    upstream = routed.response;
+
+    console.log(
+      `[${new Date().toLocaleTimeString()}] ` +
+      `[ROUTER] ` +
+      `${routed.mode.toUpperCase()} ` +
+      `-> ${routed.provider.name} ` +
+      `-> ${routed.model} ` +
+      `-> ~${routed.contextTokens} tokens ` +
+      `-> ${routed.routeReason}`,
+    );
 
     if (wantsStream) {
-      await streamOpenAiAsAnthropic(upstream, res, body.model, toolContextParts, upstreamContext);
+      await streamOpenAiAsAnthropic(
+        upstream,
+        res,
+        body.model,
+        toolContextParts,
+        upstreamContext,
+      );
+
       return;
     }
 
-    const openAiBody = await upstream.json();
-    sendJson(res, 200, openAiToAnthropic(openAiBody, body.model, toolContextParts));
+    const openAiBody =
+      await upstream.json();
+
+    // Preserve the model name Claude Code sent.
+    // The real upstream model is internal to the router.
+    openAiBody.model =
+      body.model;
+
+    sendJson(
+      res,
+      200,
+      openAiToAnthropic(
+        openAiBody,
+        body.model,
+        toolContextParts,
+      ),
+    );
   } catch (error) {
-    throw normalizeUpstreamError(error, upstreamContext);
+    throw normalizeUpstreamError(
+      error,
+      upstreamContext,
+    );
   } finally {
     upstreamContext.cleanup();
   }
 }
 
 async function handleChatCompletions(req, res) {
-  const body = await readJsonBody(req);
-  const upstreamContext = createUpstreamContext(res);
+  const body =
+    await readJsonBody(req);
+
+  const upstreamContext =
+    createUpstreamContext(res);
+
+  let routed;
   let upstream;
 
   try {
-    upstream = await callOpenCode(req, body, upstreamContext);
-    res.writeHead(upstream.status, upstreamResponseHeaders(upstream.headers));
+    routed = await callOpenCode(
+      req,
+      body,
+      upstreamContext,
+    );
+
+    upstream =
+      routed.response;
+
+    console.log(
+      `[${new Date().toLocaleTimeString()}] ` +
+      `[ROUTER] ` +
+      `${routed.mode.toUpperCase()} ` +
+      `-> ${routed.provider.name} ` +
+      `-> ${routed.model} ` +
+      `-> ~${routed.contextTokens} tokens ` +
+      `-> ${routed.routeReason}`,
+    );
+
+    res.writeHead(
+      upstream.status,
+      upstreamResponseHeaders(
+        upstream.headers,
+      ),
+    );
+
     if (upstream.body) {
-      for await (const chunk of upstream.body) res.write(chunk);
+      for await (
+        const chunk
+        of upstream.body
+      ) {
+        res.write(chunk);
+      }
     }
+
     res.end();
   } catch (error) {
-    throw normalizeUpstreamError(error, upstreamContext);
+    throw normalizeUpstreamError(
+      error,
+      upstreamContext,
+    );
   } finally {
     upstreamContext.cleanup();
   }
@@ -1451,17 +1611,28 @@ function createServer() {
       }
 
       const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+
+      if (
+            req.method === "GET" &&
+            url.pathname === "/router/status"
+          ) {
+            sendJson(
+              res,
+              200,
+              ROUTER.status(),
+            );
+
+            return;
+          }
+
       if (req.method === "GET" && url.pathname === "/health") {
         const body = {
           ok: true,
           config: CONFIG.configPath,
           listen: `http://${CONFIG.listenHost}:${CONFIG.port}`,
-          upstream: `${CONFIG.upstreamBaseUrl}/chat/completions`,
-          upstream_key_source: "request",
+          router: ROUTER.status(),
         };
-        if (url.searchParams.get("probe") === "upstream") {
-          body.upstream_probe = await probeUpstream(req);
-        }
+        
         sendJson(res, 200, body);
         return;
       }
