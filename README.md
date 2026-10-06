@@ -1,200 +1,115 @@
 # ClaudeZen Hybrid Router
 
-## Relatório Técnico de Arquitetura, Implementação e Operação
+Proxy local para Claude Code com **roteamento híbrido entre múltiplos provedores de IA**, fallback automático, seleção manual de provider, cooldown, streaming em tempo real e **observabilidade por requisição** (estimativa local × uso real informado pelo provedor).
 
-**Projeto:** ClaudeZen
-**Ambiente:** Windows
-**Runtime:** Node.js
-**Arquitetura:** Proxy local + Router multi-provider
-**Porta local:** `127.0.0.1:8787`
-**Dependências adicionais:** nenhuma
-**Status:** Operacional e validado
-
----
-
-# 1. Visão geral
-
-O ClaudeZen foi adaptado de um proxy que originalmente encaminhava as requisições para um único upstream para uma arquitetura de roteamento híbrido capaz de utilizar três provedores diferentes.
-
-A arquitetura atual permite:
-
-* utilização automática do APInex para tarefas normais;
-* utilização automática do Gemini para contextos grandes;
-* fallback automático entre provedores;
-* seleção manual de um provider;
-* cooldown temporário de providers que apresentaram falhas;
-* identificação do provider/modelo utilizado em tempo real;
-* monitoramento via endpoint `/router/status`;
-* operação sem dependências externas adicionais;
-* preservação da configuração existente do Claude Code.
-
-A arquitetura pode ser resumida como:
-
-```text
-┌─────────────────────────────────────────────────────────┐
-│                       CLAUDE CODE                       │
-│                                                         │
-│ model configurado: qwen/qwen3.8-27b:free               │
-│ base URL: http://127.0.0.1:8787                        │
-└─────────────────────────────┬───────────────────────────┘
-                              │
-                              │ HTTP
-                              ▼
-┌─────────────────────────────────────────────────────────┐
-│                    CLAUDEZEN PROXY                      │
-│                    127.0.0.1:8787                      │
-│                                                         │
-│  Anthropic/OpenAI compatibility                         │
-│  Streaming                                               │
-│  Request conversion                                      │
-│  Reasoning cache                                         │
-└─────────────────────────────┬───────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────┐
-│                    REQUEST ROUTER                       │
-│                                                         │
-│  ┌───────────────────────────────────────────────────┐  │
-│  │ Request Analyzer                                  │  │
-│  │                                                   │  │
-│  │ • tamanho estimado do contexto                   │  │
-│  │ • modo AUTO/MANUAL                               │  │
-│  │ • health/cooldown                                │  │
-│  │ • prioridade dos providers                       │  │
-│  └───────────────────────────┬───────────────────────┘  │
-│                              │                          │
-└──────────────────────────────┼──────────────────────────┘
-                               │
-              ┌────────────────┼────────────────┐
-              │                │                │
-              ▼                ▼                ▼
-       ┌────────────┐   ┌────────────┐   ┌────────────┐
-       │   APInex   │   │   Gemini   │   │ OpenRouter │
-       │            │   │            │   │            │
-       │ Trabalhador│   │ Contexto   │   │  Reserva   │
-       │ diário     │   │ grande     │   │  final     │
-       └────────────┘   └────────────┘   └────────────┘
-```
-
----
-
-# 2. Objetivo da arquitetura
-
-O objetivo principal não é simplesmente distribuir requisições.
-
-A finalidade é criar uma camada de abstração entre o Claude Code e os provedores externos.
-
-O Claude Code não precisa saber qual API está sendo utilizada.
-
-Ele sempre conversa com:
+O Claude Code conversa somente com:
 
 ```text
 http://127.0.0.1:8787
 ```
 
-O ClaudeZen decide internamente:
+O ClaudeZen decide internamente qual provider e qual modelo serão utilizados.
 
-```text
-Qual provider?
-Qual modelo?
-Está disponível?
-Está em cooldown?
-É uma requisição grande?
-O provider anterior falhou?
-```
-
-Isso transforma o ClaudeZen em uma camada de infraestrutura independente do provider.
+> **Status do projeto: em desenvolvimento ativo.** A versão atual está operacional (AUTO, MANUAL, fallback, cooldown, streaming e observabilidade), mas ainda assume **um provider por plataforma**. Já foi identificado que a configuração precisa ser mais genérica para suportar **vários modelos da mesma plataforma** (por exemplo, dois modelos do OpenRouter como contingências independentes). Esses pontos estão em implementação e teste e estão detalhados na [seção 20 do relatório técnico](RELATORIO.md#20-pontos-a-melhorar-em-desenvolvimento).
 
 ---
 
-# 3. Providers configurados
+## Arquitetura
 
-## 3.1 APInex
+```mermaid
+flowchart TD
+    A[Claude Code] --> B[ClaudeZen Proxy<br/>127.0.0.1:8787]
+
+    B --> C[Request Router]
+
+    C --> D{Modo}
+
+    D -->|AUTO| E{Contexto}
+    D -->|MANUAL| F[Provider selecionado]
+
+    E -->|< 100k tokens| G[APInex]
+    E -->|>= 100k tokens| H[Google Gemini]
+
+    G -->|200| I[Resposta em streaming]
+    H -->|200| I
+
+    G -->|429 / 5xx / timeout| H
+    H -->|429 / 5xx / timeout| J[OpenRouter]
+
+    F --> G
+    F --> H
+    F --> J
+
+    J --> I
+```
+
+---
+
+# Características
+
+* [x] Proxy local para Claude Code
+* [x] Roteamento automático (AUTO) e manual (MANUAL)
+* [x] APInex, Google Gemini e OpenRouter
+* [x] Fallback automático em cadeia
+* [x] Cooldown por provider
+* [x] Timeout por provider
+* [x] **Streaming em tempo real** (sem bufferizar a resposta)
+* [x] **Cancelamento propagado**: se o Claude Code desconectar, o upstream é abortado
+* [x] **Observabilidade por requisição**: contexto, tools, roteamento, usage, tempo
+* [x] **Uso real do upstream** comparado com a estimativa local
+* [x] Banner de inicialização com checagem das API keys
+* [x] Endpoint de status (`/router/status`)
+* [x] Compatibilidade com a infraestrutura original do ClaudeZen
+* [x] Zero dependências adicionais
+
+---
+
+# Providers
+
+## APInex
 
 ```text
-Nome: APInex
 Base URL:
 https://api.apinex.bond/v1
 
 Modelo:
 free/mimo-v2.6-pro
-
-Função:
-Provider principal
 ```
 
-É o provider utilizado normalmente no modo automático.
+Provider principal no modo AUTO.
 
-Regra:
-
-```text
-contexto < 100.000 tokens
-        ↓
-APInex
-```
-
----
-
-# 3.2 Google Gemini
+## Google Gemini
 
 ```text
-Nome: Google Gemini
-
 Base URL:
 https://generativelanguage.googleapis.com/v1beta/openai
 
 Modelo:
 gemini-3.8-flash
-
-Função:
-Provider especializado em contextos grandes
 ```
 
-Regra:
+Usado preferencialmente para contextos grandes e como primeiro fallback.
+
+## OpenRouter
 
 ```text
-contexto >= 100.000 tokens
-        ↓
-Gemini
-```
-
-Também funciona como primeiro fallback do APInex.
-
----
-
-# 3.3 OpenRouter
-
-```text
-Nome: OpenRouter
-
 Base URL:
 https://openrouter.ai/api/v1
 
 Modelo:
 qwen/qwen3.8-27b:free
-
-Função:
-Última camada de contingência
 ```
 
-O OpenRouter funciona como terceira camada:
+Último fallback.
 
-```text
-APInex
-   ↓ falha
-Gemini
-   ↓ falha
-OpenRouter
-```
+> **Em evolução:** hoje o OpenRouter é um único provider com um único modelo. A configuração está sendo generalizada para permitir vários modelos da mesma plataforma como providers independentes. Veja o [relatório técnico](RELATORIO.md#201-configuração-genérica-para-múltiplos-modelos-da-mesma-plataforma).
 
 ---
 
-# 4. Arquitetura de arquivos
-
-A estrutura relevante ficou:
+# Estrutura de arquivos
 
 ```text
-C:\AI_config\ClaudeZen\
+ClaudeZen/
 │
 ├── server.js
 ├── router.js
@@ -206,53 +121,68 @@ C:\AI_config\ClaudeZen\
 └── config.backup.json
 ```
 
-## Responsabilidade de cada arquivo
+| Arquivo              | Responsabilidade                                                                                                                              |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `server.js`          | Servidor HTTP, conversão Anthropic ↔ OpenAI, streaming, endpoints, **apresentação dos logs** e integração com o router.                       |
+| `router.js`          | Escolha do provider, estimativa de contexto, fallback, cooldown, timeout, modos AUTO/MANUAL, métricas de sessão. **Não imprime o debug amigável.** |
+| `config.json`        | Providers e regras do router.                                                                                                                 |
+| `routing-state.json` | Modo operacional atual (AUTO ou MANUAL), lido a cada requisição.                                                                              |
+| `switcher.bat`       | Menu de troca rápida de modo/provider.                                                                                                        |
 
-### `server.js`
-
-Responsável pelo servidor HTTP e pela infraestrutura original do ClaudeZen.
-
-Principais responsabilidades:
-
-* receber requisições;
-* lidar com endpoints;
-* conversão Anthropic/OpenAI;
-* streaming;
-* tratamento de respostas;
-* health endpoint;
-* integração com o Router.
-
-O `server.js` não precisa conhecer a lógica específica dos três providers.
+Divisão de responsabilidades: **o router calcula; o server apresenta.** A estimativa de contexto, a divisão por categoria e a escolha do provider vêm do `router.js`; o `server.js` apenas formata e exibe, e traz o `usage` real que o provider informa no fim da resposta.
 
 ---
 
-### `router.js`
+# Configuração
 
-É o componente responsável pela decisão de roteamento.
+## 1. API Keys
 
-Responsabilidades:
+As API keys **não** devem ser colocadas no `config.json`. Use variáveis de ambiente do Windows.
 
-```text
-Provider selection
-Context estimation
-Fallback
-Cooldown
-Timeout
-Health state
-Manual mode
-Automatic mode
-Provider logging
+```powershell
+setx APINEX_API_KEY "SUA_CHAVE"
+setx GEMINI_API_KEY "SUA_CHAVE"
+setx OPENROUTER_API_KEY "SUA_CHAVE"
 ```
 
-Essa separação é importante porque mantém a infraestrutura HTTP separada da lógica de seleção.
+Depois abra um **novo** terminal e verifique:
 
----
+```powershell
+$env:APINEX_API_KEY
+$env:GEMINI_API_KEY
+$env:OPENROUTER_API_KEY
+```
 
-### `config.json`
+Ao iniciar, o ClaudeZen verifica se cada chave existe e mostra `●` (encontrada) ou `○` (ausente, com o nome da variável a definir).
 
-Contém a configuração declarativa.
+**Nunca faça commit das API keys.**
 
-Exemplo conceitual:
+## 2. Claude Code
+
+```json
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://127.0.0.1:8787"
+  },
+  "model": "qwen/qwen3.8-27b:free"
+}
+```
+
+O modelo mostrado no Claude Code não precisa ser alterado: o router substitui internamente o modelo enviado ao upstream.
+
+```text
+Claude Code
+qwen/qwen3.8-27b:free
+       │
+       ▼
+ClaudeZen
+       │
+       ▼
+APInex
+free/mimo-v2.6-pro
+```
+
+## 3. Router
 
 ```json
 {
@@ -261,67 +191,36 @@ Exemplo conceitual:
     "largeContextThreshold": 100000,
     "normalProvider": "apinex",
     "largeContextProvider": "gemini",
-    "fallbackOrder": [
-      "apinex",
-      "gemini",
-      "openrouter"
-    ],
-    "cooldownSeconds": 300
+    "fallbackOrder": ["apinex", "gemini", "openrouter"],
+    "cooldownSeconds": 300,
+    "verbose": false
   }
 }
 ```
 
----
-
-### `routing-state.json`
-
-Representa o estado operacional escolhido pelo usuário.
-
-AUTO:
-
-```json
-{
-  "mode": "auto",
-  "provider": null
-}
-```
-
-Gemini manual:
-
-```json
-{
-  "mode": "manual",
-  "provider": "gemini"
-}
-```
-
-APInex manual:
-
-```json
-{
-  "mode": "manual",
-  "provider": "apinex"
-}
-```
-
-OpenRouter manual:
-
-```json
-{
-  "mode": "manual",
-  "provider": "openrouter"
-}
-```
+`verbose` é opcional e controla os logs técnicos do router (veja [Logs](#logs)).
 
 ---
 
-### `switcher.bat`
+# Modos de operação
 
-Interface operacional para troca rápida de provider.
-
-Menu:
+## AUTO
 
 ```text
+Contexto < 100.000 tokens   → APInex
+Contexto >= 100.000 tokens  → Gemini
+
+Fallback: APInex → Gemini → OpenRouter
+```
+
+Cooldowns são respeitados: um provider em cooldown é pulado.
+
+## MANUAL
+
+O operador escolhe o provider e a escolha **tem prioridade sobre o cooldown**: o provider selecionado é sempre tentado primeiro. Se ele falhar, o restante da ordem de fallback é usado.
+
+```text
+switcher.bat
 1 - AUTO
 2 - APInex
 3 - Google Gemini
@@ -330,996 +229,339 @@ Menu:
 0 - SAIR
 ```
 
-Não é necessário reiniciar o ClaudeZen para alterar o modo.
+Trocar pelo switcher **não exige reiniciar** o servidor: o estado é lido na próxima requisição.
 
 ---
 
-# 5. Fluxo de uma requisição
+# Como iniciar
 
-O fluxo completo é:
+```powershell
+cd C:\AI_config\ClaudeZen
+node server.js
+```
+
+Deixe esse terminal aberto. Em outro terminal:
+
+```powershell
+claude
+```
+
+Banner de inicialização:
 
 ```text
-Claude Code
-     │
-     ▼
-POST /v1/messages
-     │
-     ▼
-ClaudeZen server.js
-     │
-     ▼
-Anthropic → OpenAI conversion
-     │
-     ▼
-router.js
-     │
-     ├── identifica modo
-     │
-     ├── estima tamanho
-     │
-     ├── verifica cooldown
-     │
-     └── determina provider
-     │
-     ▼
-Provider externo
-     │
-     ▼
-Resposta
-     │
-     ▼
-OpenAI → Anthropic conversion
-     │
-     ▼
-Claude Code
+════════════════════════════════════════════════════════════
+                      CLAUDEZEN BRIDGE
+════════════════════════════════════════════════════════════
+
+   Status              : ✓ Online
+   Endereço            : http://127.0.0.1:8787
+   Config              : C:\AI_config\ClaudeZen\config.json
+   Modo                : AUTO
+   Limite contexto     : 100.000 tokens
+
+🚦 PROVIDERS
+   ● APInex       free/mimo-v2.6-pro  [normal]
+   ● Google Gemini gemini-3.8-flash  [contexto grande]
+   ○ OpenRouter   qwen/qwen3.8-27b:free  [reserva]
+       ⚠️  chave ausente: defina a variável OPENROUTER_API_KEY
+
+   Fallback            : APInex → Google Gemini → OpenRouter
+
+   Aguardando requisições...  (Ctrl+C para encerrar)
+════════════════════════════════════════════════════════════
+```
+
+Para encerrar, use **Ctrl+C**: o ClaudeZen salva o cache de reasoning, mostra o resumo da sessão e finaliza.
+
+---
+
+# Logs
+
+Cada requisição ao Claude Code gera um bloco completo. Exemplo real (APInex, modo AUTO):
+
+```text
+════════════════════════════════════════════════════════════
+                    CLAUDEZEN REQUEST #1
+════════════════════════════════════════════════════════════
+
+📦 CONTEXTO
+   Payload             : 86.7 KB
+   Tokens estimados    : ~22.194
+
+   System              : ~6.237 tokens
+   Messages            : ~347 tokens
+   Tools               : ~15.579 tokens
+   Other               : ~31 tokens
+
+🧰 TOOLS
+   Quantidade          : 25
+   Maior               : SendMessage → ~1.435 tokens
+
+🚦 ROTEAMENTO
+   Modo                : AUTO
+   Motivo              : NORMAL_CONTEXT
+   Provider            : APInex
+   Modelo              : free/mimo-v2.6-pro
+
+🌐 REQUISIÇÃO
+   Endpoint            : POST /v1/messages?beta=true
+   Horário             : 00:15:51
+
+📊 USAGE — REQUEST #1
+   Input               : 22.457 tokens (upstream)
+   Output              : 19 tokens (upstream)
+   Total               : 22.476 tokens (upstream)
+
+   Estimativa local    : ~22.194 tokens
+   Diferença input     : +263 tokens
+
+🌐 RESPOSTA
+   Status              : 200 OK
+
+⏱️ TEMPO
+   Duração total       : 3,434 s
+
+════════════════════════════════════════════════════════════
+   ✓ USAGE CONFIRMADO PELO UPSTREAM
+     Input + Output = 22.476 tokens
+════════════════════════════════════════════════════════════
+
+📈 SESSÃO
+   Requests            : 1
+   Estimado acumulado  : ~22.194 tokens
+   Input (upstream)    : 22.457 tokens
+   Output (upstream)   : 19 tokens
+   Total (upstream)    : 22.476 tokens
+   Fallbacks           : 0
+   Erros               : 0
+```
+
+## Como ler
+
+| Campo                        | Origem                                | Significado                                                                                  |
+| ---------------------------- | ------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `Tokens estimados`           | Router (local)                        | Estimativa `bytes / 4` do payload. **Não** é a contagem do provider.                         |
+| `System / Messages / Tools / Other` | Router (local)                 | Divisão da estimativa. A soma fecha exatamente com o total.                                  |
+| `Input / Output / Total (upstream)` | Provedor                       | Uso real informado pelo provider na resposta. `Total` = `Input + Output`.                    |
+| `Diferença input`            | Server                                | `Input (upstream) − Estimativa local`. Positivo: a estimativa ficou abaixo do real.          |
+| `Duração total`              | Server                                | Da chegada da requisição ao fim da resposta. **Não** é latência de rede pura.                |
+
+> O valor "(upstream)" é o uso informado pelo provedor, não necessariamente o que o provedor fatura ou o limite da sua quota.
+
+## Avisos de fallback e cooldown
+
+Sempre aparecem, independentemente do modo verbose:
+
+```text
+[03:23:22] ⚠️  APInex falhou (503) — acionando fallback
+[03:23:22] 🧊 APInex em cooldown por 300s
+[03:23:22] ⏭️  APInex pulado (em cooldown)
+```
+
+E o bloco da requisição indica `Fallback: SIM (N provider(s) falharam antes)`.
+
+## Logs técnicos do router (opcional)
+
+As linhas `[CONTEXT]`, `[ROUTE]`, `[PROVIDER]`, `[STATUS]` e `[ROUTER]` ficam **silenciosas por padrão**, pois o bloco acima já traz as mesmas informações. Para vê-las:
+
+```powershell
+$env:CLAUDEZEN_VERBOSE = "1"
+node server.js
+```
+
+ou em `config.json`:
+
+```json
+{ "routing": { "verbose": true } }
+```
+
+Para depurar o `usage` bruto recebido do provider:
+
+```powershell
+$env:CLAUDE_OPENCODE_LOG_USAGE = "1"
 ```
 
 ---
 
-# 6. Roteamento automático
+# Streaming
 
-O modo padrão é:
+O ClaudeZen repassa a resposta **em tempo real**: o primeiro token chega ao Claude Code assim que o provider começa a responder.
 
-```text
-AUTO
-```
-
-O Router estima o tamanho do payload.
-
-O limite configurado é:
-
-```text
-100.000 tokens
-```
-
-A regra é:
-
-```text
-              AUTO
-                │
-       ┌────────┴────────┐
-       │                 │
-    < 100k             >= 100k
-       │                 │
-       ▼                 ▼
-    APInex             Gemini
-```
+* O corpo da resposta não é bufferizado.
+* O timeout e o cancelamento só são liberados quando o stream termina. Se o Claude Code desconectar no meio, o request upstream é abortado.
+* O `usage` do stream chega no final e é contabilizado na sessão do router (`recordUsage`).
 
 ---
 
-# 7. Por que a estimativa não é um tokenizer real?
+# Fallback
 
-O Router utiliza uma estimativa baseada no tamanho do JSON.
+Falhas consideradas **recuperáveis** (acionam fallback e cooldown):
 
-Conceitualmente:
+```text
+408, 425, 429, 500-599
+ETIMEDOUT, ECONNRESET, ECONNREFUSED, ECONNABORTED, ENOTFOUND, EAI_AGAIN
+```
+
+Demais erros (por exemplo 400) **não** acionam fallback e são devolvidos ao cliente.
+
+```text
+APInex ── 503 ──▶ Gemini ── 503 ──▶ OpenRouter ── 200 ──▶ Claude Code
+```
+
+## Cooldown
+
+Após uma falha recuperável o provider entra em cooldown (padrão: **300 s**). No AUTO ele é pulado durante esse período; no MANUAL a escolha explícita do operador prevalece.
+
+---
+
+# Estimativa de contexto
+
+O router não usa tokenizer específico de cada modelo:
 
 ```text
 tokens ≈ bytes / 4
 ```
 
-Essa métrica não pretende reproduzir exatamente o tokenizer de cada modelo.
-
-Ela existe para tomar uma decisão operacional:
-
-```text
-requisição pequena
-        vs
-requisição grande
-```
-
-Isso evita adicionar dependências de tokenizer específicas de cada provider.
-
-Como consequência, o limite de `100.000` deve ser entendido como um **threshold aproximado**, e não como uma contagem criptograficamente exata de tokens.
+A estimativa serve para classificar a requisição como `NORMAL_CONTEXT` ou `LARGE_CONTEXT` e para a observabilidade. Em uma medição real com o APInex, a estimativa (22.194) ficou **263 tokens (1,2%) abaixo** do input informado pelo provider (22.457). O limite de `100.000` é um threshold operacional aproximado.
 
 ---
 
-# 8. Fallback automático
-
-O fallback ocorre quando um provider apresenta erro considerado recuperável.
-
-Status tratados como recuperáveis:
-
-```text
-408
-425
-429
-500
-501
-502
-503
-504
-...
-599
-```
-
-Também são considerados problemas recuperáveis alguns erros de rede:
-
-```text
-ETIMEDOUT
-ECONNRESET
-ECONNREFUSED
-ECONNABORTED
-ENOTFOUND
-EAI_AGAIN
-```
-
-Fluxo:
-
-```text
-              APInex
-                 │
-           ┌─────┴─────┐
-           │           │
-         200          erro
-           │           │
-           ▼           ▼
-          FIM        Gemini
-                       │
-                 ┌─────┴─────┐
-                 │           │
-                200         erro
-                 │           │
-                 ▼           ▼
-                FIM       OpenRouter
-```
-
----
-
-# 9. Cooldown
-
-Quando um provider apresenta uma falha recuperável, ele entra temporariamente em cooldown.
-
-Configuração atual:
-
-```text
-300 segundos
-```
-
-Ou:
-
-```text
-5 minutos
-```
-
-Exemplo:
-
-```text
-APInex
-  ↓
-429
-  ↓
-cooldown 5 min
-  ↓
-Gemini
-```
-
-Enquanto o APInex estiver em cooldown, o modo AUTO evita utilizá-lo.
-
----
-
-# 10. Diferença entre AUTO e MANUAL
-
-Essa distinção é importante.
-
-## AUTO
-
-O Router possui liberdade para escolher.
-
-Exemplo:
-
-```text
-AUTO
- ↓
-APInex
- ↓
-429
- ↓
-Gemini
-```
-
-Cooldowns são respeitados.
-
----
-
-## MANUAL
-
-O usuário determina explicitamente o provider.
-
-Exemplo:
-
-```text
-MANUAL
-provider = gemini
-```
-
-O Router tenta Gemini mesmo que ele esteja marcado em cooldown.
-
-Isso foi corrigido durante os testes.
-
-A lógica final é:
-
-```text
-AUTO
- └── respeita cooldown
-
-MANUAL
- └── respeita escolha explícita do usuário
-```
-
-Isso evita uma situação em que o usuário seleciona Gemini e o sistema simplesmente responde:
-
-```text
-Gemini está em cooldown
-503
-```
-
-sem sequer tentar o provider escolhido.
-
----
-
-# 11. Switcher
-
-O `switcher.bat` funciona como uma pequena camada de controle operacional.
-
-## AUTO
-
-```text
-1
-```
-
-gera:
-
-```json
-{
-  "mode": "auto",
-  "provider": null
-}
-```
-
-## APInex
-
-```text
-2
-```
-
-gera:
-
-```json
-{
-  "mode": "manual",
-  "provider": "apinex"
-}
-```
-
-## Gemini
-
-```text
-3
-```
-
-gera:
-
-```json
-{
-  "mode": "manual",
-  "provider": "gemini"
-}
-```
-
-## OpenRouter
-
-```text
-4
-```
-
-gera:
-
-```json
-{
-  "mode": "manual",
-  "provider": "openrouter"
-}
-```
-
-Não é necessário reiniciar o servidor para trocar o provider.
-
----
-
-# 12. Segurança das API Keys
-
-As chaves não ficam armazenadas no `config.json`.
-
-São utilizadas através de variáveis de ambiente:
-
-```text
-APINEX_API_KEY
-GEMINI_API_KEY
-OPENROUTER_API_KEY
-```
-
-Exemplo:
+# Endpoint de status
 
 ```powershell
-setx APINEX_API_KEY "..."
-setx GEMINI_API_KEY "..."
-setx OPENROUTER_API_KEY "..."
+Invoke-RestMethod http://127.0.0.1:8787/router/status
 ```
-
-O `config.json` contém apenas:
-
-```json
-"apiKeyEnv": "APINEX_API_KEY"
-```
-
-Isso reduz o risco de:
-
-* commit acidental de API keys;
-* exposição no Git;
-* compartilhamento do arquivo de configuração;
-* vazamento através de logs.
-
----
-
-# 13. Configuração do Claude Code
-
-O Claude Code continua utilizando:
-
-```json
-{
-  "env": {
-    "ANTHROPIC_AUTH_TOKEN": "...",
-    "ANTHROPIC_BASE_URL": "http://127.0.0.1:8787"
-  },
-  "model": "qwen/qwen3.8-27b:free"
-}
-```
-
-O campo:
-
-```text
-model
-```
-
-continua mostrando:
-
-```text
-qwen/qwen3.8-27b:free
-```
-
-Isso não significa que esse é necessariamente o modelo utilizado pelo upstream.
-
-Ele representa o modelo informado ao Claude Code.
-
-O Router substitui internamente o modelo enviado ao provider.
-
-Exemplo:
-
-```text
-Claude Code
-
-model:
-qwen/qwen3.8-27b:free
-
-        ↓
-
-ClaudeZen Router
-
-        ↓
-
-APInex:
-free/mimo-v2.6-pro
-```
-
-ou:
-
-```text
-Claude Code
-
-qwen/qwen3.8-27b:free
-
-        ↓
-
-ClaudeZen Router
-
-        ↓
-
-Gemini:
-gemini-3.8-flash
-```
-
-Essa abstração permite trocar o backend sem precisar reconfigurar o Claude Code.
-
----
-
-# 14. Endpoint de status
-
-Foi criado:
-
-```text
-GET /router/status
-```
-
-Exemplo:
-
-```text
-http://127.0.0.1:8787/router/status
-```
-
-O endpoint fornece:
-
-```text
-mode
-manualProvider
-thresholdTokens
-fallbackOrder
-providers
-statePath
-```
-
-Além disso, cada provider possui métricas:
-
-```text
-requests
-successes
-failures
-lastStatus
-lastError
-lastUsedAt
-cooldownUntil
-online
-```
-
----
-
-# 15. Estado validado
-
-Durante os testes, o Router apresentou:
 
 ```json
 {
   "mode": "auto",
   "manualProvider": null,
   "thresholdTokens": 100000,
-  "fallbackOrder": [
-    "apinex",
-    "gemini",
-    "openrouter"
-  ]
+  "fallbackOrder": ["apinex", "gemini", "openrouter"],
+  "providers": {
+    "apinex": {
+      "name": "APInex",
+      "model": "free/mimo-v2.6-pro",
+      "online": true,
+      "requests": 2,
+      "successes": 2,
+      "failures": 0,
+      "lastStatus": 200
+    }
+  }
 }
 ```
 
-APInex:
-
-```text
-requests: 2
-successes: 2
-failures: 0
-lastStatus: 200
-```
-
-Gemini:
-
-```text
-requests: 1
-successes: 1
-failures: 0
-lastStatus: 200
-```
-
-OpenRouter:
-
-```text
-requests: 0
-successes: 0
-failures: 0
-```
-
-Isso demonstra que APInex e Gemini foram efetivamente utilizados e responderam com sucesso.
+`online` indica apenas que o provider **não está em cooldown** conforme o conhecimento do router; não há health check ativo.
 
 ---
 
-# 16. Testes realizados
+# Segurança
 
-## Teste 1 — Sintaxe
+* Não armazene API keys no `config.json`.
+* Não faça commit de `.env` nem de arquivos com `sk-...` / `AIza...`.
 
-Executado:
+```gitignore
+routing-state.json
+*.backup.js
+*.backup.json
+.env
+.env.*
+```
+
+---
+
+# Diagnóstico
 
 ```powershell
 node --check router.js
 node --check server.js
+Invoke-RestMethod http://127.0.0.1:8787/router/status
+Get-Content C:\AI_config\ClaudeZen\routing-state.json
 ```
 
-Resultado:
+| Sintoma                                   | Causa provável                                              |
+| ----------------------------------------- | ----------------------------------------------------------- |
+| `○` e "chave ausente" no banner           | Variável de ambiente não definida neste terminal.           |
+| `HEAD /api/hello → 404`                   | Sondagem de conectividade do Claude Code. Inofensivo.       |
+| Primeiro token demora alguns segundos     | Tempo do provider processando um contexto grande.           |
+| `Fallback: SIM` no bloco                  | Um provider anterior da ordem falhou nesta requisição.      |
+
+## Reiniciar ou não?
+
+| Alteração                  | Reiniciar?                                       |
+| -------------------------- | ------------------------------------------------ |
+| `switcher.bat`             | Não. Vale na próxima requisição.                 |
+| `config.json`              | Sim.                                             |
+| `router.js` / `server.js`  | Sim (Ctrl+C e `node server.js`).                 |
+
+---
+
+# Validação
+
+| Cenário                                                        | Ambiente              | Resultado |
+| -------------------------------------------------------------- | --------------------- | --------- |
+| Sintaxe (`node --check`)                                       | Local                 | ✅        |
+| AUTO → APInex, requisição real pelo Claude Code                | **Provider real**     | ✅        |
+| MANUAL → Gemini                                                | **Provider real**     | ✅        |
+| Retorno para AUTO                                              | **Provider real**     | ✅        |
+| Usage upstream × estimativa                                    | **Provider real**     | ✅ (+1,2%)|
+| Streaming em tempo real                                        | Upstream simulado     | ✅        |
+| Cancelamento do cliente propagado ao upstream                  | Upstream simulado     | ✅        |
+| Fallback APInex 503 → Gemini 200                               | Upstream simulado     | ✅        |
+| Cadeia APInex 503 → Gemini 503 → OpenRouter 200                | Upstream simulado     | ✅        |
+| Provider em cooldown é pulado no AUTO                          | Upstream simulado     | ✅        |
+| MANUAL ignora cooldown                                         | Upstream simulado     | ✅        |
+| Fallback com falha real de provedor (429/5xx reais)            | Provider real         | ⏳ pendente |
+
+---
+
+# Limitações
+
+* **Falha no meio do stream:** se um provider já começou a transmitir e cai no meio, o router não consegue transferir a mesma resposta para outro provider. O fallback é confiável antes do início do stream.
+* **Estimativa de tokens aproximada:** não equivale ao tokenizer do modelo.
+* **Quotas:** o router não conhece o saldo real de cada provider; trabalha com requests, sucessos, falhas e cooldown.
+* **Usage da rota `/v1/chat/completions`:** o corpo é repassado sem leitura, então essa rota não registra usage.
+* **Latência média no stream:** a `averageLatencyMs` do router, nas requisições em stream, mede o tempo até a resposta começar.
+
+---
+
+# Roadmap
 
 ```text
-PASS
-PASS
+[x] Contagem real de tokens (usage informado pelo upstream)
+[x] Streaming em tempo real
+[x] Observabilidade por requisição
+[ ] Circuit breaker completo
+[ ] Health checks ativos
+[ ] Retry-After
+[ ] Rate-limit headers
+[ ] Controle de quota
+[ ] Dashboard web
+[ ] Métricas persistentes
+[ ] Histórico de requests
+[ ] Pesos por provider
+[ ] Estratégias de custo / por modelo
+[ ] Configuração genérica: vários modelos da mesma plataforma (em desenvolvimento)
+[ ] Validação da configuração na inicialização
+[ ] Menu do switcher gerado a partir do config.json
+[ ] Limpeza de resquícios do projeto original
+[ ] Testes automatizados
+[ ] Mais providers
 ```
 
 ---
 
-## Teste 2 — Router status
-
-Executado:
+# Filosofia
 
 ```text
-GET /router/status
+Claude Code não precisa conhecer o provider.
 ```
 
-Resultado:
-
-```text
-200 OK
-```
+Ele conhece apenas `127.0.0.1:8787`. O ClaudeZen conhece os providers. O router sabe qual utilizar, quando evitar e quando fazer fallback. Isso permite trocar o backend de IA sem alterar o fluxo do Claude Code.
 
 ---
 
-## Teste 3 — AUTO + APInex
+## Licença
 
-Contextos observados:
-
-```text
-~921 tokens
-~19.629 tokens
-~19.665 tokens
-```
-
-Resultado:
-
-```text
-APInex
-free/mimo-v2.6-pro
-200 OK
-```
-
----
-
-## Teste 4 — Gemini manual
-
-Configuração:
-
-```text
-MANUAL
-Gemini
-```
-
-Resultado:
-
-```text
-Google Gemini
-gemini-3.8-flash
-200 OK
-```
-
----
-
-## Teste 5 — retorno para AUTO
-
-Configuração:
-
-```text
-AUTO
-```
-
-Resultado:
-
-```text
-APInex
-free/mimo-v2.6-pro
-200 OK
-```
-
----
-
-# 17. Teste que não foi realizado
-
-O fallback real provocado artificialmente ainda não foi executado.
-
-Ou seja, ainda não foi forçada uma sequência real:
-
-```text
-APInex → 429
-       ↓
-Gemini → 200
-```
-
-nem:
-
-```text
-APInex → falha
-Gemini → falha
-OpenRouter → 200
-```
-
-A lógica está implementada, mas esse comportamento específico não deve ser declarado como empiricamente validado.
-
----
-
-# 18. Logs
-
-O Router gera logs semelhantes a:
-
-```text
-[03:19:14] [ROUTE] mode=auto context=~19,665 tokens reason=NORMAL_CONTEXT
-
-[03:19:14] [PROVIDER]
-APInex -> free/mimo-v2.6-pro
-
-[03:19:16] [STATUS]
-APInex -> 200 OK
-
-[03:19:16] [ROUTER]
-AUTO -> APInex -> free/mimo-v2.6-pro
--> ~19665 tokens
--> NORMAL_CONTEXT
-```
-
-Para Gemini:
-
-```text
-[03:17:20] [ROUTE]
-mode=manual
-context=~19,611 tokens
-reason=MANUAL
-
-[03:17:20] [PROVIDER]
-Google Gemini -> gemini-3.8-flash
-
-[03:17:39] [STATUS]
-Google Gemini -> 200 OK
-```
-
----
-
-# 19. Design arquitetural
-
-A arquitetura pode ser dividida em quatro camadas.
-
-```text
-┌───────────────────────────────────────────────┐
-│                 CLIENT LAYER                  │
-│                                               │
-│                  Claude Code                  │
-└───────────────────────┬───────────────────────┘
-                        │
-                        ▼
-┌───────────────────────────────────────────────┐
-│               PROXY LAYER                    │
-│                                               │
-│                  server.js                   │
-│                                               │
-│ • HTTP server                                │
-│ • Anthropic/OpenAI conversion                │
-│ • Streaming                                  │
-│ • Response handling                          │
-└───────────────────────┬───────────────────────┘
-                        │
-                        ▼
-┌───────────────────────────────────────────────┐
-│               ROUTING LAYER                   │
-│                                               │
-│                  router.js                   │
-│                                               │
-│ • Context estimation                         │
-│ • Provider selection                         │
-│ • Fallback                                   │
-│ • Cooldown                                   │
-│ • Manual routing                             │
-│ • Automatic routing                          │
-└───────────────┬───────────────┬───────────────┘
-                │               │
-                ▼               ▼
-       ┌────────────────┐ ┌────────────────┐
-       │ Provider APIs  │ │ Provider APIs  │
-       │                │ │                │
-       │ APInex         │ │ Gemini         │
-       └────────────────┘ └────────────────┘
-                │
-                ▼
-       ┌────────────────┐
-       │   OpenRouter   │
-       │   Last Resort  │
-       └────────────────┘
-```
-
----
-
-# 20. Design decisions
-
-## Zero dependency
-
-Não foi adicionada uma biblioteca de terceiros para:
-
-* HTTP;
-* router;
-* token estimation;
-* configuração;
-* switcher.
-
-Isso reduz:
-
-* superfície de ataque;
-* manutenção;
-* problemas de compatibilidade;
-* necessidade de `npm install`.
-
----
-
-## Provider abstraction
-
-O Claude Code não precisa conhecer os providers.
-
-Isso permite adicionar posteriormente:
-
-```text
-Provider 4
-Provider 5
-Provider 6
-```
-
-sem alterar o cliente.
-
----
-
-## Failover
-
-A falha de um provider não precisa derrubar o serviço inteiro.
-
-A intenção é:
-
-```text
-Provider failure
-      ↓
-Router
-      ↓
-Next provider
-```
-
----
-
-## Manual override
-
-O operador mantém controle direto.
-
-Isso é importante para situações como:
-
-```text
-"Quero usar Gemini agora."
-```
-
-sem precisar editar:
-
-```text
-settings.json
-```
-
-ou reiniciar o servidor.
-
----
-
-# 21. Limitações atuais
-
-### 21.1 Context estimation
-
-A contagem é aproximada.
-
-Não representa exatamente o tokenizer de cada modelo.
-
----
-
-### 21.2 Streaming failure
-
-Se um provider já começou a transmitir uma resposta e falhar no meio do stream, o Router não consegue transferir de forma transparente a mesma conversa para outro provider.
-
-Exemplo:
-
-```text
-APInex
- ↓
-200
- ↓
-stream iniciado
- ↓
-falha
-```
-
-Não é seguro simplesmente iniciar:
-
-```text
-Gemini
-```
-
-no meio da resposta.
-
-O fallback é mais confiável antes do início do streaming.
-
----
-
-### 21.3 Provider quotas
-
-O Router não possui ainda um contador real de:
-
-```text
-tokens consumidos/dia
-```
-
-Ele possui métricas de requests e erros.
-
-A quota real continua sendo determinada pelo provider.
-
----
-
-### 21.4 Health check ativo
-
-O status `online` atualmente representa principalmente o estado de cooldown conhecido pelo Router.
-
-Não significa que o provider esteja sendo continuamente testado por health probes externos.
-
----
-
-# 22. Possíveis evoluções
-
-A arquitetura permite evoluções futuras.
-
-## Priority weights
-
-Em vez de:
-
-```text
-APInex → Gemini → OpenRouter
-```
-
-poderia existir:
-
-```text
-APInex 70%
-Gemini 20%
-OpenRouter 10%
-```
-
----
-
-## Token budget tracking
-
-Adicionar:
-
-```text
-tokens usados hoje
-tokens restantes
-estimativa de consumo
-```
-
----
-
-## Rate-limit awareness
-
-Detectar headers como:
-
-```text
-Retry-After
-X-RateLimit-Remaining
-```
-
-quando fornecidos pelos providers.
-
----
-
-## Circuit breaker
-
-Evoluir o cooldown para um circuito formal:
-
-```text
-CLOSED
-   ↓
-falhas
-   ↓
-OPEN
-   ↓
-aguarda
-   ↓
-HALF-OPEN
-   ↓
-teste
-   ↓
-CLOSED
-```
-
----
-
-## Dashboard
-
-Criar uma interface web:
-
-```text
-ClaudeZen Dashboard
-
-APInex       🟢
-Gemini       🟢
-OpenRouter   🟢
-
-Mode: AUTO
-
-Requests:
-APInex       2
-Gemini       1
-OpenRouter   0
-```
-
----
-
-# 23. Conclusão
-
-O ClaudeZen deixou de ser simplesmente um bridge com um único upstream e passou a possuir uma camada de abstração de providers.
-
-A arquitetura atual é:
-
-```text
-Claude Code
-     ↓
-ClaudeZen
-     ↓
-Request Router
-     ↓
-┌────────────┬────────────┬────────────┐
-│   APInex   │   Gemini   │ OpenRouter │
-└────────────┴────────────┴────────────┘
-```
-
-Com dois modos operacionais:
-
-```text
-AUTO
-```
-
-e:
-
-```text
-MANUAL
-```
-
-O modo AUTO prioriza:
-
-```text
-APInex → Gemini → OpenRouter
-```
-
-e utiliza o tamanho estimado do contexto para decidir entre APInex e Gemini.
-
-O modo MANUAL permite ao operador escolher diretamente o provider.
-
-O sistema foi validado com sucesso para:
-
-* inicialização;
-* sintaxe;
-* status;
-* APInex;
-* Gemini;
-* troca manual;
-* retorno para AUTO;
-* processamento real pelo Claude Code;
-* logs de provider/modelo;
-* respostas HTTP 200.
-
-O fallback automático está implementado, mas o teste artificial de falha em cadeia ainda não foi executado.
-
-**Estado final:** arquitetura funcional, operacional e preparada para evolução.
+Consulte a licença original do projeto ClaudeZen antes de redistribuir modificações ou publicar alterações derivadas.
