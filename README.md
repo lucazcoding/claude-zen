@@ -10,7 +10,7 @@ http://127.0.0.1:8787
 
 O ClaudeZen decide internamente qual provider e qual modelo serão utilizados.
 
-> **Status do projeto: em desenvolvimento ativo.** A versão atual está operacional (AUTO, MANUAL, fallback, cooldown, streaming e observabilidade), mas ainda assume **um provider por plataforma**. Já foi identificado que a configuração precisa ser mais genérica para suportar **vários modelos da mesma plataforma** (por exemplo, dois modelos do OpenRouter como contingências independentes). Esses pontos estão em implementação e teste e estão detalhados na [seção 20 do relatório técnico](RELATORIO.md#20-pontos-a-melhorar-em-desenvolvimento).
+> **Status do projeto: em desenvolvimento ativo.** A versão atual está operacional (AUTO, MANUAL, fallback, cooldown, streaming e observabilidade) e já suporta **vários providers por plataforma** (por exemplo, dois modelos do OpenRouter — Qwen e Laguna — como contingências independentes). A configuração genérica, a validação na inicialização, o menu dinâmico do switcher e os testes automatizados foram implementados e validados com upstream simulado. Permanece pendente o teste com **falha real** de um provedor. Detalhes na [seção 20 do relatório técnico](RELATORIO.md#20-pontos-a-melhorar-em-desenvolvimento).
 
 ---
 
@@ -32,15 +32,17 @@ flowchart TD
 
     G -->|200| I[Resposta em streaming]
     H -->|200| I
+    K[OpenRouter Qwen] -->|200| I
+    L[OpenRouter Laguna] -->|200| I
 
     G -->|429 / 5xx / timeout| H
-    H -->|429 / 5xx / timeout| J[OpenRouter]
+    H -->|429 / 5xx / timeout| K
+    K -->|429 / 5xx / timeout| L
 
     F --> G
     F --> H
-    F --> J
-
-    J --> I
+    F --> K
+    F --> L
 ```
 
 ---
@@ -49,7 +51,11 @@ flowchart TD
 
 * [x] Proxy local para Claude Code
 * [x] Roteamento automático (AUTO) e manual (MANUAL)
-* [x] APInex, Google Gemini e OpenRouter
+* [x] APInex, Google Gemini e dois modelos do OpenRouter (Qwen e Laguna)
+* [x] Configuração genérica: vários providers da mesma plataforma
+* [x] Validação da configuração na inicialização
+* [x] Menu do switcher dinâmico (gerado a partir do config.json)
+* [x] Testes automatizados (`node --test`)
 * [x] Fallback automático em cadeia
 * [x] Cooldown por provider
 * [x] Timeout por provider
@@ -90,7 +96,7 @@ gemini-3.8-flash
 
 Usado preferencialmente para contextos grandes e como primeiro fallback.
 
-## OpenRouter
+## OpenRouter Qwen
 
 ```text
 Base URL:
@@ -100,9 +106,21 @@ Modelo:
 qwen/qwen3.8-27b:free
 ```
 
-Último fallback.
+Provedor de reserva no OpenRouter.
 
-> **Em evolução:** hoje o OpenRouter é um único provider com um único modelo. A configuração está sendo generalizada para permitir vários modelos da mesma plataforma como providers independentes. Veja o [relatório técnico](RELATORIO.md#201-configuração-genérica-para-múltiplos-modelos-da-mesma-plataforma).
+## OpenRouter Laguna
+
+```text
+Base URL:
+https://openrouter.ai/api/v1
+
+Modelo:
+poolside/laguna-s-2.1:free
+```
+
+Provedor de reserva no OpenRouter, após o Qwen.
+
+> Dois providers do OpenRouter compartilham o mesmo `baseUrl`, mas são entidades independentes: cada um tem `model`, `apiKeyEnv`, `name` e posição própria no `fallbackOrder`. O router os identifica pelo **ID** (`providers[id]`), não pela URL. Chaves diferentes da mesma conta podem compartilhar o limite dos modelos gratuitos do OpenRouter.
 
 ---
 
@@ -113,21 +131,24 @@ ClaudeZen/
 │
 ├── server.js
 ├── router.js
+├── validate-config.js
 ├── config.json
 ├── switcher.bat
+├── switcher-helper.js
 ├── routing-state.json
-│
-├── server.backup.js
-└── config.backup.json
+└── test/
 ```
 
 | Arquivo              | Responsabilidade                                                                                                                              |
 | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `server.js`          | Servidor HTTP, conversão Anthropic ↔ OpenAI, streaming, endpoints, **apresentação dos logs** e integração com o router.                       |
+| `server.js`          | Servidor HTTP, conversão Anthropic ↔ OpenAI, streaming, endpoints, **apresentação dos logs**, integração com o router e validação na inicialização. |
 | `router.js`          | Escolha do provider, estimativa de contexto, fallback, cooldown, timeout, modos AUTO/MANUAL, métricas de sessão. **Não imprime o debug amigável.** |
+| `validate-config.js` | Validação centralizada da configuração (erros que abortam e avisos).                                                                          |
 | `config.json`        | Providers e regras do router.                                                                                                                 |
 | `routing-state.json` | Modo operacional atual (AUTO ou MANUAL), lido a cada requisição.                                                                              |
-| `switcher.bat`       | Menu de troca rápida de modo/provider.                                                                                                        |
+| `switcher.bat`       | Menu dinâmico de troca rápida de modo/provider.                                                                                                |
+| `switcher-helper.js` | Lê o `config.json` para o menu do switcher e grava o `routing-state.json`.                                                                    |
+| `test/`              | Testes automatizados (`node --test`).                                                                                                         |
 
 Divisão de responsabilidades: **o router calcula; o server apresenta.** A estimativa de contexto, a divisão por categoria e a escolha do provider vêm do `router.js`; o `server.js` apenas formata e exibe, e traz o `usage` real que o provider informa no fim da resposta.
 
@@ -142,7 +163,8 @@ As API keys **não** devem ser colocadas no `config.json`. Use variáveis de amb
 ```powershell
 setx APINEX_API_KEY "SUA_CHAVE"
 setx GEMINI_API_KEY "SUA_CHAVE"
-setx OPENROUTER_API_KEY "SUA_CHAVE"
+setx CLAUDEZEN_OPENROUTER_QWEN_API_KEY "SUA_CHAVE"
+setx CLAUDEZEN_OPENROUTER_LAGUNA_API_KEY "SUA_CHAVE"
 ```
 
 Depois abra um **novo** terminal e verifique:
@@ -150,8 +172,13 @@ Depois abra um **novo** terminal e verifique:
 ```powershell
 $env:APINEX_API_KEY
 $env:GEMINI_API_KEY
-$env:OPENROUTER_API_KEY
+$env:CLAUDEZEN_OPENROUTER_QWEN_API_KEY
+$env:CLAUDEZEN_OPENROUTER_LAGUNA_API_KEY
 ```
+
+> **Nota de migração:** a variável `OPENROUTER_API_KEY` **deixou de ser usada**. O OpenRouter agora tem duas chaves independentes: `CLAUDEZEN_OPENROUTER_QWEN_API_KEY` e `CLAUDEZEN_OPENROUTER_LAGUNA_API_KEY` (ambas podem apontar para a chave da sua conta OpenRouter).
+
+> **Atenção:** chaves diferentes da mesma conta OpenRouter podem compartilhar o limite dos modelos gratuitos.
 
 Ao iniciar, o ClaudeZen verifica se cada chave existe e mostra `●` (encontrada) ou `○` (ausente, com o nome da variável a definir).
 
@@ -191,7 +218,7 @@ free/mimo-v2.6-pro
     "largeContextThreshold": 100000,
     "normalProvider": "apinex",
     "largeContextProvider": "gemini",
-    "fallbackOrder": ["apinex", "gemini", "openrouter"],
+    "fallbackOrder": ["apinex", "gemini", "openrouter-qwen", "openrouter-laguna"],
     "cooldownSeconds": 300,
     "verbose": false
   }
@@ -199,6 +226,14 @@ free/mimo-v2.6-pro
 ```
 
 `verbose` é opcional e controla os logs técnicos do router (veja [Logs](#logs)).
+
+Se `fallbackOrder`, `normalProvider` ou `largeContextProvider` estiverem ausentes, o ClaudeZen os deriva dos providers no modo AUTO:
+
+* `fallbackOrder` ausente → a ordem dos IDs em `providers`.
+* `normalProvider` ausente → o primeiro provider.
+* `largeContextProvider` ausente → o segundo provider (ou o primeiro, se só houver um).
+
+A derivação é registrada com um aviso no log de inicialização.
 
 ---
 
@@ -210,7 +245,7 @@ free/mimo-v2.6-pro
 Contexto < 100.000 tokens   → APInex
 Contexto >= 100.000 tokens  → Gemini
 
-Fallback: APInex → Gemini → OpenRouter
+Fallback: APInex → Gemini → OpenRouter Qwen → OpenRouter Laguna
 ```
 
 Cooldowns são respeitados: um provider em cooldown é pulado.
@@ -222,12 +257,15 @@ O operador escolhe o provider e a escolha **tem prioridade sobre o cooldown**: o
 ```text
 switcher.bat
 1 - AUTO
-2 - APInex
-3 - Google Gemini
-4 - OpenRouter
-5 - STATUS
+2 - APInex (apinex)
+3 - Google Gemini (gemini)
+4 - OpenRouter Qwen (openrouter-qwen)
+5 - OpenRouter Laguna (openrouter-laguna)
+6 - STATUS
 0 - SAIR
 ```
+
+O menu é gerado dinamicamente a partir do `config.json` pelo `switcher-helper.js`: um provider por opção, na ordem em que aparecem em `providers`. Se o `config.json` estiver inválido ou ilegível, o switcher mostra um erro claro e sai.
 
 Trocar pelo switcher **não exige reiniciar** o servidor: o estado é lido na próxima requisição.
 
@@ -262,10 +300,12 @@ Banner de inicialização:
 🚦 PROVIDERS
    ● APInex       free/mimo-v2.6-pro  [normal]
    ● Google Gemini gemini-3.8-flash  [contexto grande]
-   ○ OpenRouter   qwen/qwen3.8-27b:free  [reserva]
-       ⚠️  chave ausente: defina a variável OPENROUTER_API_KEY
+   ○ OpenRouter Qwen qwen/qwen3.8-27b:free  [reserva]
+       ⚠️  chave ausente: defina a variável CLAUDEZEN_OPENROUTER_QWEN_API_KEY
+   ○ OpenRouter Laguna poolside/laguna-s-2.1:free  [reserva]
+       ⚠️  chave ausente: defina a variável CLAUDEZEN_OPENROUTER_LAGUNA_API_KEY
 
-   Fallback            : APInex → Google Gemini → OpenRouter
+   Fallback            : APInex → Google Gemini → OpenRouter Qwen → OpenRouter Laguna
 
    Aguardando requisições...  (Ctrl+C para encerrar)
 ════════════════════════════════════════════════════════════
@@ -405,7 +445,7 @@ ETIMEDOUT, ECONNRESET, ECONNREFUSED, ECONNABORTED, ENOTFOUND, EAI_AGAIN
 Demais erros (por exemplo 400) **não** acionam fallback e são devolvidos ao cliente.
 
 ```text
-APInex ── 503 ──▶ Gemini ── 503 ──▶ OpenRouter ── 200 ──▶ Claude Code
+APInex ── 503 ──▶ Gemini ── 503 ──▶ OpenRouter Qwen ── 503 ──▶ OpenRouter Laguna ── 200 ──▶ Claude Code
 ```
 
 ## Cooldown
@@ -437,7 +477,9 @@ Invoke-RestMethod http://127.0.0.1:8787/router/status
   "mode": "auto",
   "manualProvider": null,
   "thresholdTokens": 100000,
-  "fallbackOrder": ["apinex", "gemini", "openrouter"],
+  "normalProvider": "apinex",
+  "largeContextProvider": "gemini",
+  "fallbackOrder": ["apinex", "gemini", "openrouter-qwen", "openrouter-laguna"],
   "providers": {
     "apinex": {
       "name": "APInex",
@@ -497,6 +539,58 @@ Get-Content C:\AI_config\ClaudeZen\routing-state.json
 
 ---
 
+# Validação da configuração na inicialização
+
+Na inicialização, o ClaudeZen valida o `config.json` (centralizado em `validate-config.js`). A falha (**erro**) impede a subida do serviço, com `process.exit(1)` e mensagem clara em português.
+
+## Erros (abortam a inicialização)
+
+| Verificação                                      | Mensagem (resumo)                                                                 |
+| ------------------------------------------------ | --------------------------------------------------------------------------------- |
+| `providers` ausente ou vazio                     | `Nenhum provider configurado: o objeto "providers" está ausente ou vazio...`       |
+| ID no `fallbackOrder` inexistente em `providers` | `"fallbackOrder" referencia o provider "X", que não existe em "providers".`        |
+| `normalProvider` apontando para ID inexistente   | `"routing.normalProvider" aponta para o provider "X", que não existe...`           |
+| `largeContextProvider` → ID inexistente          | `"routing.largeContextProvider" aponta para o provider "X", que não existe...`     |
+| Provider sem `baseUrl`                           | `Provider "X": o campo "baseUrl" está ausente ou vazio.`                           |
+| Provider sem `model`                             | `Provider "X": o campo "model" está ausente ou vazio.`                             |
+| Provider sem `apiKeyEnv`                         | `Provider "X": o campo "apiKeyEnv" está ausente ou vazio.`                         |
+| `fallbackOrder` ausente/vazio ou não-lista       | `O campo "routing.fallbackOrder" deve ser uma lista não vazia...`                  |
+
+## Avisos (não abortam)
+
+| Verificação                                       | Efeito                                                                 |
+| ------------------------------------------------- | ---------------------------------------------------------------------- |
+| Variável de ambiente da chave não definida        | Exibida no banner no início (chave ausente). O serviço continua.        |
+| ID duplicado no `fallbackOrder`                   | Duplicatas são ignoradas na ordem de fallback.                          |
+| Provider declarado mas fora do `fallbackOrder`    | Só fica acessível no modo MANUAL.                                       |
+
+---
+
+# Testes
+
+Sem dependências externas (usa apenas o runner nativo `node --test`):
+
+```powershell
+node --test
+```
+
+Cobre roteamento, validação da configuração, derivação do `fallbackOrder`, fallback em cadeia, cooldown, modo MANUAL e o envio do modelo correto quando dois providers compartilham o mesmo `baseUrl`. Os providers de roteamento são **upstreams HTTP locais simulados** em `127.0.0.1` (portas livres), sem tocar em chaves reais.
+
+Para checar apenas o arquivo novo:
+
+```powershell
+node --test test/generic-providers.test.js
+```
+
+O pacote já define `"test": "node --test"` no `package.json`, então `npm test` também funciona. Para apontar o servidor para outro `config.json`, use `CLAUDEZEN_CONFIG` (ou `CLAUDE_OPENCODE_PROXY_CONFIG`, ou `--config`), ex.:
+
+```powershell
+$env:CLAUDEZEN_CONFIG = "C:\tmp\meu-config.json"
+node server.js
+```
+
+---
+
 # Validação
 
 | Cenário                                                        | Ambiente              | Resultado |
@@ -510,8 +604,12 @@ Get-Content C:\AI_config\ClaudeZen\routing-state.json
 | Cancelamento do cliente propagado ao upstream                  | Upstream simulado     | ✅        |
 | Fallback APInex 503 → Gemini 200                               | Upstream simulado     | ✅        |
 | Cadeia APInex 503 → Gemini 503 → OpenRouter 200                | Upstream simulado     | ✅        |
+| Cadeia completa 503 → 503 → 503 → 200 (4 providers)            | Upstream simulado     | ✅        |
 | Provider em cooldown é pulado no AUTO                          | Upstream simulado     | ✅        |
 | MANUAL ignora cooldown                                         | Upstream simulado     | ✅        |
+| Mesmo `baseUrl` com modelos diferentes envia o model correto   | Upstream simulado     | ✅        |
+| Validação da configuração (abort na inicialização)             | Upstream simulado     | ✅        |
+| Derivação do `fallbackOrder` quando ausente                    | Upstream simulado     | ✅        |
 | Fallback com falha real de provedor (429/5xx reais)            | Provider real         | ⏳ pendente |
 
 ---
@@ -532,6 +630,11 @@ Get-Content C:\AI_config\ClaudeZen\routing-state.json
 [x] Contagem real de tokens (usage informado pelo upstream)
 [x] Streaming em tempo real
 [x] Observabilidade por requisição
+[x] Configuração genérica: vários modelos da mesma plataforma
+[x] Validação da configuração na inicialização
+[x] Menu do switcher gerado a partir do config.json
+[x] Limpeza de resquícios do projeto original
+[x] Testes automatizados (`node --test`)
 [ ] Circuit breaker completo
 [ ] Health checks ativos
 [ ] Retry-After
@@ -542,11 +645,6 @@ Get-Content C:\AI_config\ClaudeZen\routing-state.json
 [ ] Histórico de requests
 [ ] Pesos por provider
 [ ] Estratégias de custo / por modelo
-[ ] Configuração genérica: vários modelos da mesma plataforma (em desenvolvimento)
-[ ] Validação da configuração na inicialização
-[ ] Menu do switcher gerado a partir do config.json
-[ ] Limpeza de resquícios do projeto original
-[ ] Testes automatizados
 [ ] Mais providers
 ```
 
