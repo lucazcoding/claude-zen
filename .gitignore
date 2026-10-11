@@ -1,7 +1,11 @@
 *.log
 *.tmp
+*.backup.js
+*.backup.json
 .claude/
-deepseek-v4-opencode-claude-code-bridge-reasoning-cache.json
-deepseek-v4-opencode-claude-code-reasoning-cache.json
-opencode-proxy-reasoning-cache.json
+.claudezen/
+routing-state.json
+routing-state.json.tmp
 node_modules/
+.env
+.env.*
