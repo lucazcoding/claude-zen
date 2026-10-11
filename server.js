@@ -4,14 +4,14 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { createRouter } = require("./router");
+const { validateConfig } = require("./validate-config");
 
 const DEFAULT_BASE_URL = "https://opencode.ai/zen/go/v1";
-const DEFAULT_MODELS = ["deepseek-v4-pro[1m]", "deepseek-v4-flash"];
 
 const DEFAULT_REASONING_CACHE_PATH = path.join(
   os.homedir(),
-  ".claude",
-  "deepseek-v4-opencode-claude-code-bridge-reasoning-cache.json",
+  ".claudezen",
+  "reasoning-cache.json",
 );
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -136,12 +136,39 @@ function loadConfig() {
 
   const configPath =
     process.env.CLAUDE_OPENCODE_PROXY_CONFIG ||
+    process.env.CLAUDEZEN_CONFIG ||
     argValue("--config") ||
     defaultPath;
 
   const resolvedPath = path.resolve(configPath);
   const fileConfig = readJson(resolvedPath) || {};
   const configDir = path.dirname(resolvedPath);
+
+  const providersConfig = configValue(
+    fileConfig,
+    ["providers"],
+    {},
+  );
+
+  function deriveModels(providers) {
+    const seen = new Set();
+    const models = [];
+
+    for (const id of Object.keys(providers)) {
+      const model = providers[id]?.model;
+
+      if (
+        typeof model === "string" &&
+        model &&
+        !seen.has(model)
+      ) {
+        seen.add(model);
+        models.push(model);
+      }
+    }
+
+    return models;
+  }
 
   return {
     configPath: resolvedPath,
@@ -317,7 +344,7 @@ function loadConfig() {
       Array.isArray(fileConfig.models) &&
       fileConfig.models.length
         ? fileConfig.models
-        : DEFAULT_MODELS,
+        : deriveModels(providersConfig),
 
     routing: {
       mode: String(
@@ -346,16 +373,16 @@ function loadConfig() {
         configValue(
           fileConfig,
           ["routing", "normalProvider"],
-          "apinex",
-        ),
+          "",
+        ) || "",
       ),
 
       largeContextProvider: String(
         configValue(
           fileConfig,
           ["routing", "largeContextProvider"],
-          "gemini",
-        ),
+          "",
+        ) || "",
       ),
 
       fallbackOrder:
@@ -371,7 +398,7 @@ function loadConfig() {
               ["routing", "fallbackOrder"],
               [],
             )
-          : ["apinex", "gemini", "openrouter"],
+          : [],
 
       cooldownSeconds: numberConfig(
         "routing.cooldownSeconds",
@@ -388,11 +415,7 @@ function loadConfig() {
       ),
     },
 
-    providers: configValue(
-      fileConfig,
-      ["providers"],
-      {},
-    ),
+    providers: providersConfig,
 
     routingStatePath: resolveMaybeRelative(
       configValue(
@@ -3329,13 +3352,19 @@ function printStartupBanner() {
 
     const roles = [];
 
-    if (id === routing.normalProvider) {
+    const effectiveNormal =
+      routerStatus?.normalProvider ||
+      routing.normalProvider;
+
+    const effectiveLarge =
+      routerStatus?.largeContextProvider ||
+      routing.largeContextProvider;
+
+    if (id === effectiveNormal) {
       roles.push("normal");
     }
 
-    if (
-      id === routing.largeContextProvider
-    ) {
+    if (id === effectiveLarge) {
       roles.push("contexto grande");
     }
 
@@ -4396,7 +4425,7 @@ function createServer() {
                       id,
                       object: "model",
                       owned_by:
-                        "opencode-go",
+                        "claudezen",
                     }),
                   ),
               },
@@ -4555,7 +4584,36 @@ function installShutdownHandlers(
    START
    ============================================================ */
 
+function assertConfigValid(config) {
+  const { errors, warnings } =
+    validateConfig(config);
+
+  for (const warning of warnings) {
+    console.warn(
+      `[config] ⚠️  ${warning}`,
+    );
+  }
+
+  if (errors.length) {
+    console.error(
+      "[config] ❌ A configuração possui erros e não pode iniciar:",
+    );
+
+    for (const error of errors) {
+      console.error(`   - ${error}`);
+    }
+
+    console.error(
+      "[config] Corrija o config.json e execute novamente.",
+    );
+
+    process.exit(1);
+  }
+}
+
 function startServer() {
+  assertConfigValid(CONFIG);
+
   loadReasoningCache();
 
   const server =
@@ -4588,6 +4646,7 @@ module.exports = {
   anthropicMessagesToOpenAi,
   anthropicToolsToOpenAi,
   anthropicToOpenAi,
+  assertConfigValid,
   createServer,
   currentToolContextParts,
   expandHome,

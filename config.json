@@ -14,7 +14,8 @@
     "fallbackOrder": [
       "apinex",
       "gemini",
-      "openrouter"
+      "openrouter-qwen",
+      "openrouter-laguna"
     ],
 
     "cooldownSeconds": 300
@@ -37,11 +38,19 @@
       "timeoutMs": 600000
     },
 
-    "openrouter": {
-      "name": "OpenRouter",
+    "openrouter-qwen": {
+      "name": "OpenRouter Qwen",
       "baseUrl": "https://openrouter.ai/api/v1",
       "model": "qwen/qwen3.8-27b:free",
-      "apiKeyEnv": "OPENROUTER_API_KEY",
+      "apiKeyEnv": "CLAUDEZEN_OPENROUTER_QWEN_API_KEY",
+      "timeoutMs": 600000
+    },
+
+    "openrouter-laguna": {
+      "name": "OpenRouter Laguna",
+      "baseUrl": "https://openrouter.ai/api/v1",
+      "model": "poolside/laguna-s-2.1:free",
+      "apiKeyEnv": "CLAUDEZEN_OPENROUTER_LAGUNA_API_KEY",
       "timeoutMs": 600000
     }
   },
@@ -54,13 +63,9 @@
 
   "reasoningCacheMaxSizeBytes": 209715200,
 
-  "reasoningCachePath": "~/.claude/deepseek-v4-opencode-claude-code-bridge-reasoning-cache.json",
+  "reasoningCachePath": "~/.claudezen/reasoning-cache.json",
 
   "requestBodyLimitBytes": 104857600,
 
-  "upstreamTimeoutMs": 600000,
-
-  "models": [
-    "qwen/qwen3.8-27b:free"
-  ]
+  "upstreamTimeoutMs": 600000
 }

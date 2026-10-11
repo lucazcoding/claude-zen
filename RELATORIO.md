@@ -8,8 +8,8 @@
 **Arquitetura:** Proxy local + Router multi-provider
 **Porta local:** `127.0.0.1:8787`
 **Dependências adicionais:** nenhuma
-**Última atualização:** 06/10/2026
-**Status:** Operacional e **em desenvolvimento ativo**. Fallback em cadeia validado em ambiente simulado; validação com falha real de provedor pendente. Pontos de melhoria já identificados (principalmente configuração genérica para múltiplos modelos da mesma plataforma) estão documentados na [seção 20](#20-pontos-a-melhorar-em-desenvolvimento).
+**Última atualização:** 11/10/2026
+**Status:** Operacional e **em desenvolvimento ativo**. Fallback em cadeia validado em ambiente simulado. A **configuração genérica para múltiplos providers por plataforma** foi implementada e testada (dois modelos do OpenRouter como providers independentes), com validação da configuração na inicialização, menu dinâmico no switcher e testes automatizados. Permanece pendente o **teste com falha real de provedor** (429/5xx reais). Ver [seção 20](#20-pontos-a-melhorar-em-desenvolvimento).
 
 ---
 
@@ -76,9 +76,10 @@ Está em cooldown?   O contexto é grande?   O anterior falhou?
 | ----------------- | ---------------------------------------------------------- | ------------------------- | -------------------------- |
 | **APInex**        | `https://api.apinex.bond/v1`                               | `free/mimo-v2.6-pro`      | Principal (contexto < 100k) |
 | **Google Gemini** | `https://generativelanguage.googleapis.com/v1beta/openai`  | `gemini-3.8-flash`        | Contexto grande (≥ 100k) e 1º fallback |
-| **OpenRouter**    | `https://openrouter.ai/api/v1`                             | `qwen/qwen3.8-27b:free`   | Última contingência        |
+| **OpenRouter Qwen**    | `https://openrouter.ai/api/v1`                         | `qwen/qwen3.8-27b:free`   | Contingência (3º)           |
+| **OpenRouter Laguna**  | `https://openrouter.ai/api/v1`                         | `poolside/laguna-s-2.1:free` | Última contingência (4º) |
 
-> **Nota:** nesta versão cada plataforma é configurada como **um** provider com **um** modelo e **uma** variável de chave. Suportar vários modelos da mesma plataforma (por exemplo, dois modelos do OpenRouter) é um ponto de melhoria em andamento; veja a [seção 20.1](#201-configuração-genérica-para-múltiplos-modelos-da-mesma-plataforma).
+> **Nota:** dois providers do OpenRouter compartilham o mesmo `baseUrl`, mas são entidades independentes (cada um com `model`, `apiKeyEnv`, `name` e posição própria no `fallbackOrder`). O router os identifica pelo **ID** (`providers[id]`), não pela URL. Isso permite usar vários modelos da mesma plataforma como contingências separadas. Detalhes na [seção 20.1](#201-configuração-genérica-para-múltiplos-modelos-da-mesma-plataforma).
 
 ---
 
@@ -372,7 +373,7 @@ Observação: com streaming em tempo real e requisições paralelas do Claude Co
 
 # 13. Segurança das API Keys
 
-As chaves ficam em variáveis de ambiente (`APINEX_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`); o `config.json` contém apenas `"apiKeyEnv": "APINEX_API_KEY"`. Isso reduz o risco de commit acidental, exposição no Git, compartilhamento do arquivo e vazamento em logs. O banner de inicialização avisa quando alguma chave não está definida.
+As chaves ficam em variáveis de ambiente (`APINEX_API_KEY`, `GEMINI_API_KEY`, `CLAUDEZEN_OPENROUTER_QWEN_API_KEY`, `CLAUDEZEN_OPENROUTER_LAGUNA_API_KEY`); o `config.json` contém apenas `"apiKeyEnv": "APINEX_API_KEY"`. A variável `OPENROUTER_API_KEY` deixou de ser usada (o OpenRouter agora tem duas chaves independentes). Isso reduz o risco de commit acidental, exposição no Git, compartilhamento do arquivo e vazamento em logs. O banner de inicialização avisa quando alguma chave não está definida.
 
 ---
 
@@ -435,13 +436,17 @@ O `router.js` foi auditado com testes sobre payloads simulados. A fórmula centr
 | Cancelamento do cliente propaga ao upstream; servidor segue de pé | Upstream simulado | ✅           |
 | Fallback APInex 503 → Gemini 200                              | Upstream simulado  | ✅           |
 | Cadeia APInex 503 → Gemini 503 → OpenRouter 200               | Upstream simulado  | ✅           |
+| Cadeia completa 503 → 503 → 503 → 200 (4 providers)           | Upstream simulado  | ✅           |
 | Provider em cooldown é pulado no AUTO                         | Upstream simulado  | ✅           |
 | MANUAL ignora cooldown e tenta o provider escolhido           | Upstream simulado  | ✅           |
+| Mesmo `baseUrl` com modelos diferentes envia o model correto  | Upstream simulado  | ✅           |
+| Validação da configuração na inicialização (abort)            | Upstream simulado  | ✅           |
+| Derivação do `fallbackOrder` quando ausente                   | Upstream simulado  | ✅           |
 | Erro 400 do cliente gera box de erro sem fallback             | Upstream simulado  | ✅           |
 | Banner com chave ausente; encerramento com resumo             | Local              | ✅           |
 | **Fallback com falha real de provedor (429/5xx reais)**       | Provider real      | ⏳ **pendente** |
 
-**Nota de rigor:** os cenários de fallback, cooldown e streaming foram validados com upstreams HTTP locais simulados que reproduzem 503 e respostas SSE. Eles comprovam a lógica do ClaudeZen, mas não substituem um teste com falha real de um provedor (por exemplo, esgotar a quota do APInex e observar a transição para o Gemini).
+**Nota de rigor:** os cenários de fallback, cooldown, validação e streaming foram validados com upstreams HTTP locais simulados que reproduzem 503 e respostas SSE, comprovando a lógica do ClaudeZen — inclusive a configuração genérica com dois providers do OpenRouter (Qwen e Laguna). Eles não substituem um teste com falha real de um provedor (por exemplo, esgotar a quota do APInex e observar a transição para o Gemini).
 
 ---
 
@@ -469,11 +474,11 @@ O `router.js` foi auditado com testes sobre payloads simulados. A fórmula centr
 
 # 20. Pontos a melhorar (em desenvolvimento)
 
-Esta seção registra pontos de melhoria identificados após a versão atual do projeto. Eles estão sendo implementados e testados e **ainda não fazem parte do código publicado neste repositório**. O objetivo é manter o estado real do projeto documentado: o que funciona hoje, o que foi percebido como limitação e para onde a arquitetura está indo.
+Esta seção registra pontos de melhoria identificados ao longo do projeto. Itens já **implementados** são marcados abaixo e passam a fazer parte do código; os **pendentes** continuam listados. O objetivo é manter o estado real do projeto documentado.
 
-## 20.1 Configuração genérica para múltiplos modelos da mesma plataforma
+## 20.1 Configuração genérica para múltiplos modelos da mesma plataforma — **implementada**
 
-**Motivação.** Plataformas como o OpenRouter expõem vários modelos pelo mesmo endpoint. A configuração atual foi pensada com um provider por plataforma (APInex, Gemini, OpenRouter), cada um com um único modelo e uma única variável de chave. Ao querer usar, por exemplo, dois modelos do OpenRouter (Qwen e Laguna) como contingências independentes, ficou claro que a configuração precisa tratar **plataforma** e **modelo** como coisas separadas.
+**Motivação.** Plataformas como o OpenRouter expõem vários modelos pelo mesmo endpoint. A configuração original assumia um provider por plataforma (APInex, Gemini, OpenRouter), cada um com um único modelo e uma única variável de chave. Para usar dois modelos do OpenRouter (Qwen e Laguna) como contingências independentes, a configuração passou a tratar **plataforma** e **modelo** como coisas separadas.
 
 **Princípio adotado.** O router identifica cada provider pelo seu **ID** no `config.json`, não pela URL. Dois providers podem compartilhar o mesmo `baseUrl` e continuar sendo entidades distintas, cada uma com `model`, `apiKeyEnv`, `name` e posição própria no `fallbackOrder`:
 
@@ -481,38 +486,56 @@ Esta seção registra pontos de melhoria identificados após a versão atual do 
 apinex → gemini → openrouter-qwen → openrouter-laguna
 ```
 
-**O que a análise do código mostrou:**
+**Implementado nessa versão:**
 
-| Ponto | Situação na versão atual | Direção |
-| ----- | ------------------------ | ------- |
-| Identidade do provider | O roteamento usa `providers[id]`; IDs arbitrários já são aceitos. O suporte básico existe e o gargalo está na configuração e nos valores padrão. | Documentar e testar o uso de vários IDs para a mesma plataforma. |
-| `fallbackOrder` padrão | A lista padrão (`apinex`, `gemini`, `openrouter`) está escrita diretamente em `router.js` e `server.js`. | Remover o padrão fixo ou derivá-lo de `providers`. |
-| `normalProvider` / `largeContextProvider` | Padrões `apinex` e `gemini` fixos no código. | Exigir valor explícito na configuração ou validar no início. |
-| ID inexistente no `fallbackOrder` | É ignorado em silêncio. | Validar a configuração na inicialização e avisar com clareza. |
-| `switcher.bat` | O menu lista as opções fixas (AUTO, APInex, Gemini, OpenRouter). | Gerar o menu a partir dos providers do `config.json`. |
-| Chaves de API | Uma variável por provider (`apiKeyEnv`). | Uma variável por provider, com nomes próprios. Atenção: chaves da mesma conta podem compartilhar o limite dos modelos gratuitos. |
-| Documentação | README e relatório descrevem três providers fixos. | Atualizar junto com a implementação. |
+| Ponto | Antes | Agora |
+| ----- | ----- | ----- |
+| Identidade do provider | `providers[id]` já aceitava IDs arbitrários, mas a configuração fixa limitava. | IDs independentes para cada modelo, incluindo dois do OpenRouter. |
+| `fallbackOrder` padrão | Lista fixa (`apinex`, `gemini`, `openrouter`) em `router.js` e `server.js`. | Sem padrão fixo; quando ausente, deriva de `Object.keys(providers)`. |
+| `normalProvider` / `largeContextProvider` | Padrões `apinex` e `gemini` fixos no código. | Sem padrão fixo; quando ausentes, derivam do primeiro/segundo provider e avisam no log. |
+| ID inexistente no `fallbackOrder` | Ignorado em silêncio. | Validação na inicialização (`validate-config.js`) aborta com mensagem clara. |
+| `switcher.bat` | Menu fixo (AUTO, APInex, Gemini, OpenRouter). | Menu dinâmico gerado a partir do `config.json` (`switcher-helper.js`). |
+| Chaves de API | Uma variável por provider. | Uma variável por provider: `CLAUDEZEN_OPENROUTER_QWEN_API_KEY` e `CLAUDEZEN_OPENROUTER_LAGUNA_API_KEY`. `OPENROUTER_API_KEY` deixou de ser usada. Atenção: chaves da mesma conta podem compartilhar o limite dos modelos gratuitos. |
+| Modelos em `/v1/models` | Lista fixa no config. | Se `models` ausente, deriva dos `model` de todos os providers (sem duplicados). |
+| Resquícios do projeto original | Nomes DeepSeek/OpenCode no cache e na lista padrão. | Cache renomeado para `~/.claudezen/reasoning-cache.json`; `DEFAULT_MODELS` removido; `owned_by` neutro. |
+| Testes automatizados | Validação manual com upstream simulado. | `test/generic-providers.test.js` (17 cenários) com upstream local simulado; `node --test`. |
 
-**Exemplo da direção em teste** (dois providers que compartilham só o endpoint):
+**Configuração final dos providers:**
 
 ```json
-"openrouter-qwen": {
-  "name": "OpenRouter Qwen",
-  "baseUrl": "https://openrouter.ai/api/v1",
-  "model": "qwen/qwen3.8-27b:free",
-  "apiKeyEnv": "CLAUDEZEN_OPENROUTER_QWEN_API_KEY",
-  "timeoutMs": 600000
-},
-"openrouter-laguna": {
-  "name": "OpenRouter Laguna",
-  "baseUrl": "https://openrouter.ai/api/v1",
-  "model": "poolside/laguna-s-2.1:free",
-  "apiKeyEnv": "CLAUDEZEN_OPENROUTER_LAGUNA_API_KEY",
-  "timeoutMs": 600000
+"providers": {
+  "apinex": {
+    "name": "APInex",
+    "baseUrl": "https://api.apinex.bond/v1",
+    "model": "free/mimo-v2.6-pro",
+    "apiKeyEnv": "APINEX_API_KEY",
+    "timeoutMs": 600000
+  },
+  "gemini": {
+    "name": "Google Gemini",
+    "baseUrl": "https://generativelanguage.googleapis.com/v1beta/openai",
+    "model": "gemini-3.8-flash",
+    "apiKeyEnv": "GEMINI_API_KEY",
+    "timeoutMs": 600000
+  },
+  "openrouter-qwen": {
+    "name": "OpenRouter Qwen",
+    "baseUrl": "https://openrouter.ai/api/v1",
+    "model": "qwen/qwen3.8-27b:free",
+    "apiKeyEnv": "CLAUDEZEN_OPENROUTER_QWEN_API_KEY",
+    "timeoutMs": 600000
+  },
+  "openrouter-laguna": {
+    "name": "OpenRouter Laguna",
+    "baseUrl": "https://openrouter.ai/api/v1",
+    "model": "poolside/laguna-s-2.1:free",
+    "apiKeyEnv": "CLAUDEZEN_OPENROUTER_LAGUNA_API_KEY",
+    "timeoutMs": 600000
+  }
 }
 ```
 
-**Evolução possível (proposta, ainda não implementada).** Separar o conceito de plataforma do de provider, para não repetir `baseUrl` e valores comuns:
+**Evolução possível (proposta, ainda NÃO implementada).** Separar o conceito de plataforma do de provider, para não repetir `baseUrl` e valores comuns:
 
 ```json
 "platforms": {
@@ -524,15 +547,15 @@ apinex → gemini → openrouter-qwen → openrouter-laguna
 }
 ```
 
-## 20.2 Outros pontos identificados
+## 20.2 Pontos identificados (pendentes)
 
 | Item | Descrição |
 | ---- | --------- |
-| Validação da configuração | Na inicialização: IDs do `fallbackOrder` que não existem em `providers`, `apiKeyEnv` ausente, lista de fallback vazia, `normalProvider` ou `largeContextProvider` fora de `providers`. |
-| Limpeza de resquícios do projeto original | O `config.json` e o `server.js` ainda carregam nomes herdados do projeto base (por exemplo, o caminho do cache de reasoning e a lista padrão de modelos com nomes DeepSeek). Revisar o que ainda faz sentido e renomear. |
-| Menu dinâmico do `switcher.bat` | Hoje o menu é fixo; precisa acompanhar os providers configurados. |
 | Teste com falha real de provedor | Fallback validado em ambiente simulado; falta validar com 429/5xx reais (já listado na seção 17). |
-| Testes automatizados | A validação atual é manual e com upstream simulado; transformar os cenários simulados em testes repetíveis. |
+| Validação da configuração na inicialização | **Implementado** em `validate-config.js` (erros abortam; avisos não). Mantido aqui como referência de comportamento. |
+| Menu dinâmico do `switcher.bat` | **Implementado** via `switcher-helper.js`. Referência mantida. |
+| Limpeza de resquícios do projeto original | **Implementado** (cache renomeado, `DEFAULT_MODELS` removido, `owned_by` neutro). Referência mantida. |
+| Testes automatizados | **Implementado** (`test/generic-providers.test.js`; `node --test`). Referência mantida. |
 
 ---
 

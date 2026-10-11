@@ -1,7 +1,7 @@
 {
-  "name": "deepseek-v4-opencode-claude-code-bridge",
-  "version": "0.2.1",
-  "description": "DeepSeek V4 on OpenCode Go compatibility bridge for Claude Code.",
+  "name": "claudezen-hybrid-router",
+  "version": "0.3.0",
+  "description": "ClaudeZen Hybrid Router: proxy local em Node.js com roteamento AUTO/MANUAL, fallback, cooldown, streaming e observabilidade.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js --config ./config.json",
@@ -18,10 +18,9 @@
     "claude-code",
     "anthropic",
     "openai-compatible",
-    "opencode",
-    "opencode-go",
-    "deepseek",
-    "deepseek-v4"
+    "router",
+    "proxy",
+    "multi-provider"
   ],
   "license": "MIT",
   "engines": {
