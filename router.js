@@ -858,11 +858,47 @@ function createRouter(config) {
     ) &&
     routing.fallbackOrder.length
       ? routing.fallbackOrder
-      : [
-          "apinex",
-          "gemini",
-          "openrouter"
-        ];
+      : Object.keys(providers);
+
+  /*
+   * normalProvider / largeContextProvider não têm mais padrão fixo
+   * no código. Se ausentes, derivam dos próprios providers:
+   *   - normal           -> primeiro provider de "providers"
+   *   - largeContext     -> segundo provider (ou o mesmo, se só houver um)
+   * Um aviso é emitido na inicialização para deixar a derivação visível.
+   */
+  const providerIds =
+    Object.keys(providers);
+
+  const derivedNormalProvider =
+    providerIds[0] || null;
+
+  const derivedLargeContextProvider =
+    providerIds[1] ||
+    providerIds[0] ||
+    null;
+
+  const normalProvider =
+    routing.normalProvider ||
+    derivedNormalProvider;
+
+  const largeContextProvider =
+    routing.largeContextProvider ||
+    derivedLargeContextProvider;
+
+  if (!routing.normalProvider) {
+    console.warn(
+      "[config] \"routing.normalProvider\" não está definido. Usando o primeiro provider da lista: " +
+      (normalProvider || "(nenhum)")
+    );
+  }
+
+  if (!routing.largeContextProvider) {
+    console.warn(
+      "[config] \"routing.largeContextProvider\" não está definido. Usando o segundo provider da lista (ou o primeiro, se houver apenas um): " +
+      (largeContextProvider || "(nenhum)")
+    );
+  }
 
   const stats =
     new Map();
@@ -1073,17 +1109,9 @@ function createRouter(config) {
       };
     }
 
-    const largeProvider =
-      routing.largeContextProvider ||
-      "gemini";
-
-    const normalProvider =
-      routing.normalProvider ||
-      "apinex";
-
     const preferred =
       contextTokens >= threshold
-        ? largeProvider
+        ? largeContextProvider
         : normalProvider;
 
     const reason =
@@ -2265,6 +2293,10 @@ function createRouter(config) {
 
       thresholdTokens:
         threshold,
+
+      normalProvider,
+
+      largeContextProvider,
 
       fallbackOrder:
         fallbackOrder,
