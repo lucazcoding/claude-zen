@@ -1,8 +1,8 @@
-```bat
 @echo off
 setlocal EnableExtensions EnableDelayedExpansion
 
-cd /d C:\AI_config\ClaudeZen
+set "BASE=C:\AI_config\ClaudeZen"
+cd /d "%BASE%"
 
 :menu
 cls
@@ -11,22 +11,36 @@ echo ============================================
 echo          CLAUDEZEN HYBRID ROUTER
 echo ============================================
 echo.
-echo 1 - AUTO
-echo 2 - APInex
-echo 3 - Google Gemini
-echo 4 - OpenRouter
-echo 5 - STATUS
-echo 0 - SAIR
-echo.
 
+:: Gera o menu a partir dos providers do config.json (sem parsear JSON em batch)
+set "MENU_OK=1"
+for /f "usebackq delims=" %%L in (`node "%BASE%\switcher-helper.js" menu`) do (
+    echo %%L
+    set "MENU_OK=0"
+)
+
+if "!MENU_OK!"=="1" (
+    echo.
+    echo ERRO: nao foi possivel gerar o menu. Verifique o config.json.
+    pause
+    goto menu
+)
+
+echo.
 set /p choice=Escolha: 
 
-if "%choice%"=="1" goto auto
-if "%choice%"=="2" goto apinex
-if "%choice%"=="3" goto gemini
-if "%choice%"=="4" goto openrouter
-if "%choice%"=="5" goto status
-if "%choice%"=="0" goto end
+:: Resolve a opcao escolhida (tipo#id) via helper
+set "RT="
+set "RI="
+for /f "usebackq tokens=1,2 delims=#" %%A in (`node "%BASE%\switcher-helper.js" resolve %choice%`) do (
+    set "RT=%%A"
+    set "RI=%%B"
+)
+
+if "%RT%"=="auto" goto auto
+if "%RT%"=="manual" goto manual
+if "%RT%"=="status" goto status
+if "%RT%"=="exit" goto end
 
 echo.
 echo Opcao invalida.
@@ -38,62 +52,30 @@ goto menu
 echo.
 echo Alterando para AUTO...
 
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ^
-"$p='C:\AI_config\ClaudeZen\routing-state.json'; [System.IO.File]::WriteAllText($p, '{\"mode\":\"auto\",\"provider\":null}', (New-Object System.Text.UTF8Encoding($false)))"
+node "%BASE%\switcher-helper.js" set auto
 
-echo.
-echo ============================================
-echo Modo AUTO ativado.
-echo ============================================
-echo.
-
-goto verify
-
-
-:apinex
-echo.
-echo Alterando para APInex...
-
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ^
-"$p='C:\AI_config\ClaudeZen\routing-state.json'; [System.IO.File]::WriteAllText($p, '{\"mode\":\"manual\",\"provider\":\"apinex\"}', (New-Object System.Text.UTF8Encoding($false)))"
-
-echo.
-echo ============================================
-echo APInex ativado.
-echo ============================================
-echo.
+if errorlevel 1 (
+    echo.
+    echo ERRO ao alterar o modo.
+    pause
+    goto menu
+)
 
 goto verify
 
 
-:gemini
+:manual
 echo.
-echo Alterando para Google Gemini...
+echo Alterando para manual: %RI%...
 
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ^
-"$p='C:\AI_config\ClaudeZen\routing-state.json'; [System.IO.File]::WriteAllText($p, '{\"mode\":\"manual\",\"provider\":\"gemini\"}', (New-Object System.Text.UTF8Encoding($false)))"
+node "%BASE%\switcher-helper.js" set manual %RI%
 
-echo.
-echo ============================================
-echo Google Gemini ativado.
-echo ============================================
-echo.
-
-goto verify
-
-
-:openrouter
-echo.
-echo Alterando para OpenRouter...
-
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ^
-"$p='C:\AI_config\ClaudeZen\routing-state.json'; [System.IO.File]::WriteAllText($p, '{\"mode\":\"manual\",\"provider\":\"openrouter\"}', (New-Object System.Text.UTF8Encoding($false)))"
-
-echo.
-echo ============================================
-echo OpenRouter ativado.
-echo ============================================
-echo.
+if errorlevel 1 (
+    echo.
+    echo ERRO ao alterar o provider.
+    pause
+    goto menu
+)
 
 goto verify
 
@@ -103,14 +85,14 @@ echo.
 echo Verificando estado atual...
 echo.
 
-if not exist "C:\AI_config\ClaudeZen\routing-state.json" (
+if not exist "%BASE%\routing-state.json" (
     echo ERRO: routing-state.json nao foi criado.
     echo.
     pause
     goto menu
 )
 
-type "C:\AI_config\ClaudeZen\routing-state.json"
+type "%BASE%\routing-state.json"
 
 echo.
 echo.
@@ -139,8 +121,8 @@ echo.
 
 echo [routing-state.json]
 echo --------------------------------------------
-if exist "C:\AI_config\ClaudeZen\routing-state.json" (
-    type "C:\AI_config\ClaudeZen\routing-state.json"
+if exist "%BASE%\routing-state.json" (
+    type "%BASE%\routing-state.json"
 ) else (
     echo Arquivo ainda nao existe.
 )
@@ -162,4 +144,3 @@ goto menu
 :end
 endlocal
 exit /b 0
-```
