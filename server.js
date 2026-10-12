@@ -5,6 +5,7 @@ const os = require("os");
 const path = require("path");
 const { createRouter } = require("./router");
 const { validateConfig } = require("./validate-config");
+const secretsStore = require("./secrets-store");
 
 const DEFAULT_BASE_URL = "https://opencode.ai/zen/go/v1";
 
@@ -436,8 +437,44 @@ function normalizeBaseUrl(url) {
     : `${base}/v1`;
 }
 
-const CONFIG = loadConfig();
-const ROUTER = createRouter(CONFIG);
+let CONFIG = loadConfig();
+let ROUTER = createRouter(CONFIG, { secrets: secretsStore });
+
+const ADMIN_TOKEN =
+  process.env.CLAUDEZEN_ADMIN_TOKEN ||
+  crypto.randomBytes(32).toString("hex");
+
+const ADMIN_BODY_LIMIT_BYTES =
+  64 * 1024;
+
+const ADMIN_STATIC_FILES = {
+  "/admin": "index.html",
+  "/admin/": "index.html",
+  "/admin/admin.css": "admin.css",
+  "/admin/admin.js": "admin.js",
+};
+
+const ADMIN_STATIC_TYPES = {
+  "index.html": "text/html; charset=utf-8",
+  "admin.css": "text/css; charset=utf-8",
+  "admin.js": "text/javascript; charset=utf-8",
+};
+
+const ADMIN_STATIC_CSP =
+  "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none';";
+
+function safeCompare(a, b) {
+  const bufA =
+    Buffer.from(String(a || ""));
+  const bufB =
+    Buffer.from(String(b || ""));
+
+  if (bufA.length !== bufB.length) {
+    return false;
+  }
+
+  return crypto.timingSafeEqual(bufA, bufB);
+}
 
 const reasoningByToolCallId = new Map();
 const reasoningByAssistantText = new Map();
@@ -1053,6 +1090,93 @@ function sendError(
       message,
     },
   });
+}
+
+function sendAdminJson(res, status, body) {
+  res.writeHead(status, {
+    "content-type":
+      "application/json; charset=utf-8",
+    "cache-control": "no-store",
+  });
+
+  res.end(JSON.stringify(body));
+}
+
+function sendAdminError(res, status, message) {
+  sendAdminJson(res, status, {
+    type: "error",
+    error: {
+      message,
+    },
+  });
+}
+
+function readAdminBody(req) {
+  return new Promise((resolve, reject) => {
+    let data = "";
+    let done = false;
+
+    function cleanup() {
+      req.off("data", onData);
+      req.off("end", onEnd);
+      req.off("error", onError);
+    }
+
+    function fail(error) {
+      if (done) return;
+      done = true;
+      cleanup();
+      reject(error);
+      req.resume();
+    }
+
+    function onData(chunk) {
+      if (done) return;
+      data += chunk;
+
+      if (
+        Buffer.byteLength(data) >
+        ADMIN_BODY_LIMIT_BYTES
+      ) {
+        const error = new Error(
+          "Corpo da requisição excede o limite de 64 KB.",
+        );
+        error.status = 413;
+        fail(error);
+      }
+    }
+
+    function onEnd() {
+      if (done) return;
+      done = true;
+      cleanup();
+      resolve(data);
+    }
+
+    function onError(error) {
+      fail(error);
+    }
+
+    req.setEncoding("utf8");
+    req.on("data", onData);
+    req.on("end", onEnd);
+    req.on("error", onError);
+  });
+}
+
+async function readAdminJsonBody(req) {
+  const raw = await readAdminBody(req);
+  if (!raw) return {};
+
+  try {
+    return JSON.parse(raw);
+  } catch (error) {
+    const parseError = new Error(
+      `JSON inválido no corpo da requisição: ${error.message}`,
+    );
+    parseError.status = 400;
+    throw parseError;
+  }
 }
 
 function readBody(req) {
@@ -3301,6 +3425,11 @@ function printStartupBanner() {
     `http://${CONFIG.listenHost}:${CONFIG.port}`,
   );
 
+  logRow(
+    "Admin",
+    `http://127.0.0.1:${CONFIG.port}/admin?token=${ADMIN_TOKEN}`,
+  );
+
   logRow("Config", CONFIG.configPath);
 
   logRow(
@@ -3343,12 +3472,10 @@ function printStartupBanner() {
     const provider =
       providers[id] || {};
 
-    const hasKey = Boolean(
-      provider.apiKeyEnv &&
-        process.env[
-          provider.apiKeyEnv
-        ],
-    );
+    const keyInfo =
+      getKeyInfoForProvider(provider, id);
+
+    const hasKey = keyInfo.hasKey;
 
     const roles = [];
 
@@ -3372,6 +3499,16 @@ function printStartupBanner() {
       roles.push("reserva");
     }
 
+    let origemChave;
+
+    if (keyInfo.keySource === "stored") {
+      origemChave = `armazenada localmente (...${keyInfo.keyLast4 || "????"})`;
+    } else if (keyInfo.keySource === "env") {
+      origemChave = `variável ${provider.apiKeyEnv} (...${keyInfo.keyLast4 || "????"})`;
+    } else {
+      origemChave = "ausente";
+    }
+
     console.log(
       `   ${hasKey ? "●" : "○"} ${String(
         provider.name || id,
@@ -3380,12 +3517,16 @@ function printStartupBanner() {
       }  [${roles.join(" + ")}]`,
     );
 
+    console.log(
+      `       chave: ${origemChave}`,
+    );
+
     if (!hasKey) {
       console.log(
-        `       ⚠️  chave ausente: defina a variável ${
+        `       ⚠️  defina a variável ${
           provider.apiKeyEnv ||
           "(apiKeyEnv não configurada)"
-        }`,
+        } ou adicione pela API administrativa`,
       );
     }
   }
@@ -4263,6 +4404,908 @@ async function handleChatCompletions(
 }
 
 /* ============================================================
+   ADMIN — CONFIG PERSISTÊNCIA E RELOAD
+   ============================================================ */
+
+function getRawConfig() {
+  return readJson(CONFIG.configPath) || {};
+}
+
+function writeConfigAtomic(rawConfig) {
+  const tmp =
+    CONFIG.configPath + ".tmp." + process.pid;
+
+  fs.writeFileSync(
+    tmp,
+    JSON.stringify(rawConfig, null, 2),
+    "utf8",
+  );
+
+  fs.renameSync(tmp, CONFIG.configPath);
+}
+
+function backupConfig() {
+  const backupsDir = path.join(
+    path.dirname(CONFIG.configPath),
+    ".claudezen-backups",
+  );
+
+  try {
+    fs.mkdirSync(backupsDir, { recursive: true });
+  } catch {
+    /* ignore */
+  }
+
+  const stamp = new Date()
+    .toISOString()
+    .replace(/[:.]/g, "-");
+
+  const backupPath = path.join(
+    backupsDir,
+    `config-${stamp}.json`,
+  );
+
+  try {
+    fs.copyFileSync(CONFIG.configPath, backupPath);
+  } catch {
+    /* ignore */
+  }
+
+  try {
+    const files = fs
+      .readdirSync(backupsDir)
+      .filter(
+        (f) =>
+          f.startsWith("config-") &&
+          f.endsWith(".json"),
+      )
+      .sort();
+
+    while (files.length > 10) {
+      const oldest = files.shift();
+      try {
+        fs.unlinkSync(
+          path.join(backupsDir, oldest),
+        );
+      } catch {
+        /* ignore */
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+function reloadConfig() {
+  const oldStats =
+    ROUTER && typeof ROUTER.getStats === "function"
+      ? ROUTER.getStats()
+      : null;
+
+  const newConfig = loadConfig();
+
+  CONFIG = newConfig;
+
+  ROUTER = createRouter(CONFIG, {
+    secrets: secretsStore,
+    stats: oldStats,
+  });
+
+  return CONFIG;
+}
+
+function saveConfig(rawConfig) {
+  const { errors } =
+    validateConfig(rawConfig);
+
+  if (errors.length) {
+    const error = new Error(
+      errors.join("; "),
+    );
+
+    error.status = 422;
+    error.errors = errors;
+
+    throw error;
+  }
+
+  backupConfig();
+  writeConfigAtomic(rawConfig);
+  reloadConfig();
+}
+
+function generateApiKeyEnv(id) {
+  const upper = String(id)
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+
+  return `CLAUDEZEN_${upper}_API_KEY`;
+}
+
+function getKeyInfoForProvider(provider, id) {
+  const stored = secretsStore.getSecret(id);
+
+  if (stored) {
+    return {
+      hasKey: true,
+      keySource: "stored",
+      keyLast4:
+        stored.length >= 4
+          ? stored.slice(-4)
+          : null,
+    };
+  }
+
+  const envKey =
+    provider.apiKeyEnv
+      ? process.env[provider.apiKeyEnv]
+      : "";
+
+  if (envKey) {
+    return {
+      hasKey: true,
+      keySource: "env",
+      keyLast4:
+        envKey.length >= 4
+          ? envKey.slice(-4)
+          : null,
+    };
+  }
+
+  return {
+    hasKey: false,
+    keySource: "missing",
+    keyLast4: null,
+  };
+}
+
+function getRoutingStatePath() {
+  return (
+    CONFIG.routingStatePath ||
+    path.join(
+      path.dirname(CONFIG.configPath),
+      "routing-state.json",
+    )
+  );
+}
+
+function writeRoutingState(mode, providerId) {
+  const statePath = getRoutingStatePath();
+  const tmp = statePath + ".tmp." + process.pid;
+
+  fs.writeFileSync(
+    tmp,
+    JSON.stringify({
+      mode,
+      provider:
+        mode === "manual" ? providerId : null,
+    }),
+    "utf8",
+  );
+
+  fs.renameSync(tmp, statePath);
+}
+
+/* ============================================================
+   ADMIN — SEGURANÇA
+   ============================================================ */
+
+function isAllowedHost(hostHeader, actualPort) {
+  const port = actualPort;
+  const allowed = new Set([
+    `127.0.0.1:${port}`,
+    `localhost:${port}`,
+    `127.0.0.1`,
+    `localhost`,
+  ]);
+
+  return allowed.has(String(hostHeader || ""));
+}
+
+function isAllowedOrigin(originHeader, actualPort) {
+  if (!originHeader) return true;
+
+  const port = actualPort;
+  const allowed = new Set([
+    `http://127.0.0.1:${port}`,
+    `http://localhost:${port}`,
+  ]);
+
+  return allowed.has(String(originHeader));
+}
+
+function adminSecurityCheck(req, res, method) {
+  const token = req.headers["x-admin-token"];
+  const actualPort = req.socket && req.socket.localPort;
+
+  if (!token || !safeCompare(token, ADMIN_TOKEN)) {
+    sendAdminError(
+      res,
+      401,
+      "Token administrativo ausente ou inválido.",
+    );
+    return false;
+  }
+
+  if (!isAllowedHost(req.headers.host, actualPort)) {
+    sendAdminError(
+      res,
+      403,
+      "Host não permitido. Acesse via 127.0.0.1 ou localhost.",
+    );
+    return false;
+  }
+
+  const stateChanging =
+    method === "POST" ||
+    method === "PUT" ||
+    method === "PATCH" ||
+    method === "DELETE";
+
+  if (
+    stateChanging &&
+    !isAllowedOrigin(req.headers.origin, actualPort)
+  ) {
+    sendAdminError(
+      res,
+      403,
+      "Origem não permitida.",
+    );
+    return false;
+  }
+
+  return true;
+}
+
+/* ============================================================
+   ADMIN — HANDLERS
+   ============================================================ */
+
+function buildAdminState() {
+  const providers = CONFIG.providers || {};
+  const routing = CONFIG.routing || {};
+  const routerStatus = ROUTER.status();
+
+  const providersOut = {};
+
+  for (const id of Object.keys(providers)) {
+    const p = providers[id];
+    const keyInfo = getKeyInfoForProvider(p, id);
+    const stats = routerStatus.providers?.[id] || {};
+
+    providersOut[id] = {
+      id,
+      name: p.name || id,
+      baseUrl: p.baseUrl,
+      model: p.model,
+      apiKeyEnv: p.apiKeyEnv,
+      timeoutMs: p.timeoutMs || null,
+      headers: p.headers || null,
+      ...keyInfo,
+      online: stats.online !== false,
+      cooldownUntil: stats.cooldownUntil || null,
+      requests: stats.requests || 0,
+      successes: stats.successes || 0,
+      failures: stats.failures || 0,
+      lastStatus: stats.lastStatus || null,
+      lastError: stats.lastError || null,
+    };
+  }
+
+  return {
+    mode: routerStatus.mode,
+    manualProvider: routerStatus.manualProvider,
+    normalProvider: routerStatus.normalProvider,
+    largeContextProvider:
+      routerStatus.largeContextProvider,
+    largeContextThreshold:
+      routerStatus.thresholdTokens,
+    fallbackOrder: routerStatus.fallbackOrder,
+    providers: providersOut,
+  };
+}
+
+async function handleAdminApi(req, res, url) {
+  const method = req.method;
+  const pathname = url.pathname;
+
+  const staticFile =
+    ADMIN_STATIC_FILES[pathname];
+
+  if (method === "GET" && staticFile) {
+    if (
+      !isAllowedHost(
+        req.headers.host,
+        req.socket && req.socket.localPort,
+      )
+    ) {
+      res.writeHead(403, {
+        "content-type":
+          "text/html; charset=utf-8",
+      });
+
+      res.end(
+        "<h1>403 — Host não permitido.</h1>",
+      );
+      return;
+    }
+
+    const adminDir = path.join(
+      __dirname,
+      "admin",
+    );
+
+    const filePath = path.join(
+      adminDir,
+      staticFile,
+    );
+
+    const resolved = path.resolve(filePath);
+
+    if (
+      resolved !==
+        path.join(adminDir, staticFile)
+    ) {
+      res.writeHead(404, {
+        "content-type":
+          "text/html; charset=utf-8",
+      });
+      res.end("<h1>404</h1>");
+      return;
+    }
+
+    let content;
+    try {
+      content = fs.readFileSync(
+        resolved,
+        "utf8",
+      );
+    } catch {
+      res.writeHead(404, {
+        "content-type":
+          "text/html; charset=utf-8",
+      });
+      res.end(
+        "<h1>404 — Arquivo não encontrado.</h1>",
+      );
+      return;
+    }
+
+    res.writeHead(200, {
+      "content-type":
+        ADMIN_STATIC_TYPES[staticFile],
+      "cache-control": "no-store",
+      "content-security-policy":
+        ADMIN_STATIC_CSP,
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "no-referrer",
+    });
+
+    res.end(content);
+    return;
+  }
+
+  if (!adminSecurityCheck(req, res, method)) {
+    return;
+  }
+
+  try {
+    /* ---- GET /admin/api/state ---- */
+    if (
+      method === "GET" &&
+      pathname === "/admin/api/state"
+    ) {
+      sendAdminJson(res, 200, buildAdminState());
+      return;
+    }
+
+    /* ---- POST /admin/api/providers ---- */
+    if (
+      method === "POST" &&
+      pathname === "/admin/api/providers"
+    ) {
+      const body = await readAdminJsonBody(req);
+
+      const id = body.id;
+
+      if (
+        !id ||
+        typeof id !== "string" ||
+        !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(id)
+      ) {
+        sendAdminError(
+          res,
+          400,
+          "ID do provider inválido. Use letras, números, '.', '_' ou '-'.",
+        );
+        return;
+      }
+
+      const raw = getRawConfig();
+      raw.providers = raw.providers || {};
+
+      if (raw.providers[id]) {
+        sendAdminError(
+          res,
+          409,
+          `Já existe um provider com o ID "${id}".`,
+        );
+        return;
+      }
+
+      if (
+        !body.baseUrl ||
+        !body.model
+      ) {
+        sendAdminError(
+          res,
+          400,
+          "Os campos 'baseUrl' e 'model' são obrigatórios.",
+        );
+        return;
+      }
+
+      const provider = {
+        name: body.name || id,
+        baseUrl: String(body.baseUrl),
+        model: String(body.model),
+        apiKeyEnv:
+          body.apiKeyEnv || generateApiKeyEnv(id),
+      };
+
+      if (body.timeoutMs !== undefined) {
+        provider.timeoutMs = Number(body.timeoutMs);
+      }
+
+      if (
+        body.headers &&
+        typeof body.headers === "object"
+      ) {
+        provider.headers = body.headers;
+      }
+
+      raw.providers[id] = provider;
+
+      raw.routing = raw.routing || {};
+      raw.routing.fallbackOrder =
+        raw.routing.fallbackOrder || [];
+
+      if (
+        !raw.routing.fallbackOrder.includes(id)
+      ) {
+        raw.routing.fallbackOrder.push(id);
+      }
+
+      saveConfig(raw);
+
+      if (body.apiKey) {
+        secretsStore.setSecret(id, String(body.apiKey));
+      }
+
+      sendAdminJson(res, 201, {
+        id,
+        message: "Provider criado com sucesso.",
+      });
+      return;
+    }
+
+    /* ---- PUT /admin/api/providers/:id ---- */
+    const putMatch = pathname.match(
+      /^\/admin\/api\/providers\/([^/]+)$/,
+    );
+
+    if (method === "PUT" && putMatch) {
+      const id = decodeURIComponent(putMatch[1]);
+      const body = await readAdminJsonBody(req);
+
+      const raw = getRawConfig();
+      raw.providers = raw.providers || {};
+
+      if (!raw.providers[id]) {
+        sendAdminError(
+          res,
+          404,
+          `Provider "${id}" não encontrado.`,
+        );
+        return;
+      }
+
+      const current = raw.providers[id];
+
+      if (body.name !== undefined)
+        current.name = String(body.name);
+      if (body.baseUrl !== undefined)
+        current.baseUrl = String(body.baseUrl);
+      if (body.model !== undefined)
+        current.model = String(body.model);
+      if (body.timeoutMs !== undefined)
+        current.timeoutMs = Number(body.timeoutMs);
+      if (
+        body.headers !== undefined
+      ) {
+        current.headers =
+          body.headers === null
+            ? undefined
+            : body.headers;
+      }
+
+      saveConfig(raw);
+
+      if (
+        body.apiKey !== undefined &&
+        body.apiKey !== null &&
+        body.apiKey !== ""
+      ) {
+        secretsStore.setSecret(id, String(body.apiKey));
+      }
+
+      sendAdminJson(res, 200, {
+        id,
+        message: "Provider atualizado com sucesso.",
+      });
+      return;
+    }
+
+    /* ---- DELETE /admin/api/providers/:id ---- */
+    if (method === "DELETE" && putMatch) {
+      const id = decodeURIComponent(putMatch[1]);
+
+      const raw = getRawConfig();
+      raw.providers = raw.providers || {};
+      raw.routing = raw.routing || {};
+
+      if (!raw.providers[id]) {
+        sendAdminError(
+          res,
+          404,
+          `Provider "${id}" não encontrado.`,
+        );
+        return;
+      }
+
+      const normal = raw.routing.normalProvider;
+      const large = raw.routing.largeContextProvider;
+      const state = ROUTER.getModeState();
+      const manualActive =
+        state.mode === "manual" && state.provider === id;
+
+      if (
+        id === normal ||
+        id === large ||
+        manualActive
+      ) {
+        const reasons = [];
+        if (id === normal)
+          reasons.push("normalProvider");
+        if (id === large)
+          reasons.push("largeContextProvider");
+        if (manualActive)
+          reasons.push("provider manual ativo");
+
+        sendAdminError(
+          res,
+          409,
+          `Não é possível remover "${id}". Ele está em uso como: ${reasons.join(", ")}. Altere essas configurações antes de remover.`,
+        );
+        return;
+      }
+
+      delete raw.providers[id];
+
+      if (Array.isArray(raw.routing.fallbackOrder)) {
+        raw.routing.fallbackOrder =
+          raw.routing.fallbackOrder.filter(
+            (x) => x !== id,
+          );
+      }
+
+      saveConfig(raw);
+      secretsStore.deleteSecret(id);
+
+      sendAdminJson(res, 200, {
+        id,
+        message: "Provider removido com sucesso.",
+      });
+      return;
+    }
+
+    /* ---- PUT /admin/api/key/:id ---- */
+    const keyMatch = pathname.match(
+      /^\/admin\/api\/key\/([^/]+)$/,
+    );
+
+    if (method === "PUT" && keyMatch) {
+      const id = decodeURIComponent(keyMatch[1]);
+      const body = await readAdminJsonBody(req);
+
+      if (
+        !body.apiKey ||
+        typeof body.apiKey !== "string"
+      ) {
+        sendAdminError(
+          res,
+          400,
+          "O campo 'apiKey' é obrigatório.",
+        );
+        return;
+      }
+
+      if (!CONFIG.providers?.[id]) {
+        sendAdminError(
+          res,
+          404,
+          `Provider "${id}" não encontrado.`,
+        );
+        return;
+      }
+
+      secretsStore.setSecret(id, body.apiKey);
+
+      sendAdminJson(res, 200, {
+        id,
+        message: "Chave atualizada com sucesso.",
+      });
+      return;
+    }
+
+    /* ---- DELETE /admin/api/key/:id ---- */
+    if (method === "DELETE" && keyMatch) {
+      const id = decodeURIComponent(keyMatch[1]);
+
+      if (!CONFIG.providers?.[id]) {
+        sendAdminError(
+          res,
+          404,
+          `Provider "${id}" não encontrado.`,
+        );
+        return;
+      }
+
+      secretsStore.deleteSecret(id);
+
+      sendAdminJson(res, 200, {
+        id,
+        message:
+          "Chave removida do armazenamento local. A variável de ambiente volta a valer, se existir.",
+      });
+      return;
+    }
+
+    /* ---- PUT /admin/api/order ---- */
+    if (
+      method === "PUT" &&
+      pathname === "/admin/api/order"
+    ) {
+      const body = await readAdminJsonBody(req);
+      const order = body.fallbackOrder;
+
+      if (
+        !Array.isArray(order) ||
+        order.length === 0
+      ) {
+        sendAdminError(
+          res,
+          400,
+          "'fallbackOrder' deve ser uma lista não vazia de IDs.",
+        );
+        return;
+      }
+
+      const raw = getRawConfig();
+      raw.routing = raw.routing || {};
+      raw.providers = raw.providers || {};
+
+      const seen = new Set();
+
+      for (const id of order) {
+        if (!raw.providers[id]) {
+          sendAdminError(
+            res,
+            400,
+            `O ID "${id}" não corresponde a um provider existente.`,
+          );
+          return;
+        }
+        if (seen.has(id)) {
+          sendAdminError(
+            res,
+            400,
+            `O ID "${id}" aparece mais de uma vez na lista.`,
+          );
+          return;
+        }
+        seen.add(id);
+      }
+
+      raw.routing.fallbackOrder = order;
+      saveConfig(raw);
+
+      sendAdminJson(res, 200, {
+        fallbackOrder: order,
+        message: "Ordem de fallback atualizada.",
+      });
+      return;
+    }
+
+    /* ---- PUT /admin/api/routing ---- */
+    if (
+      method === "PUT" &&
+      pathname === "/admin/api/routing"
+    ) {
+      const body = await readAdminJsonBody(req);
+      const raw = getRawConfig();
+      raw.routing = raw.routing || {};
+      raw.providers = raw.providers || {};
+
+      if (body.normalProvider !== undefined) {
+        if (
+          body.normalProvider &&
+          !raw.providers[body.normalProvider]
+        ) {
+          sendAdminError(
+            res,
+            400,
+            `normalProvider "${body.normalProvider}" não existe.`,
+          );
+          return;
+        }
+        raw.routing.normalProvider =
+          body.normalProvider || undefined;
+      }
+
+      if (
+        body.largeContextProvider !== undefined
+      ) {
+        if (
+          body.largeContextProvider &&
+          !raw.providers[body.largeContextProvider]
+        ) {
+          sendAdminError(
+            res,
+            400,
+            `largeContextProvider "${body.largeContextProvider}" não existe.`,
+          );
+          return;
+        }
+        raw.routing.largeContextProvider =
+          body.largeContextProvider || undefined;
+      }
+
+      if (
+        body.largeContextThreshold !== undefined
+      ) {
+        const t = Number(body.largeContextThreshold);
+        if (!Number.isFinite(t) || t < 1) {
+          sendAdminError(
+            res,
+            400,
+            "largeContextThreshold deve ser um número >= 1.",
+          );
+          return;
+        }
+        raw.routing.largeContextThreshold = t;
+      }
+
+      saveConfig(raw);
+
+      sendAdminJson(res, 200, {
+        normalProvider: raw.routing.normalProvider,
+        largeContextProvider:
+          raw.routing.largeContextProvider,
+        largeContextThreshold:
+          raw.routing.largeContextThreshold,
+        message: "Configuração de roteamento atualizada.",
+      });
+      return;
+    }
+
+    /* ---- PUT /admin/api/mode ---- */
+    if (
+      method === "PUT" &&
+      pathname === "/admin/api/mode"
+    ) {
+      const body = await readAdminJsonBody(req);
+      const mode = String(body.mode || "").toLowerCase();
+
+      if (mode !== "auto" && mode !== "manual" && mode !== "custom") {
+        sendAdminError(
+          res,
+          400,
+          "'mode' deve ser 'auto', 'manual' ou 'custom'.",
+        );
+        return;
+      }
+
+      let providerId = null;
+
+      if (mode === "manual") {
+        providerId = body.provider;
+        if (
+          !providerId ||
+          !CONFIG.providers?.[providerId]
+        ) {
+          sendAdminError(
+            res,
+            400,
+            "Modo manual requer um 'provider' válido.",
+          );
+          return;
+        }
+      }
+
+      writeRoutingState(mode, providerId);
+
+      sendAdminJson(res, 200, {
+        mode,
+        provider: providerId,
+        message: `Modo alterado para ${mode.toUpperCase()}.`,
+      });
+      return;
+    }
+
+    /* ---- POST /admin/api/providers/:id/test ---- */
+    const testMatch = pathname.match(
+      /^\/admin\/api\/providers\/([^/]+)\/test$/,
+    );
+
+    if (method === "POST" && testMatch) {
+      const id = decodeURIComponent(testMatch[1]);
+
+      if (!CONFIG.providers?.[id]) {
+        sendAdminError(
+          res,
+          404,
+          `Provider "${id}" não encontrado.`,
+        );
+        return;
+      }
+
+      const result = await ROUTER.testProvider(id);
+
+      sendAdminJson(res, 200, result);
+      return;
+    }
+
+    /* ---- POST /admin/api/reload ---- */
+    if (
+      method === "POST" &&
+      pathname === "/admin/api/reload"
+    ) {
+      const reloaded = reloadConfig();
+
+      sendAdminJson(res, 200, {
+        message: "Configuração recarregada com sucesso.",
+        providers: Object.keys(
+          reloaded.providers || {},
+        ),
+      });
+      return;
+    }
+
+    sendAdminError(
+      res,
+      404,
+      `Rota admin não encontrada: ${method} ${pathname}`,
+    );
+  } catch (error) {
+    const status =
+      error.status &&
+      Number.isInteger(error.status)
+        ? error.status
+        : 500;
+
+    sendAdminError(
+      res,
+      status,
+      error && error.message
+        ? error.message
+        : String(error),
+    );
+  }
+}
+
+/* ============================================================
    SERVER
    ============================================================ */
 
@@ -4469,6 +5512,28 @@ function createServer() {
           }
 
           /* ---------------------------------------------
+             ADMIN API
+             --------------------------------------------- */
+
+          if (
+            Object.prototype.hasOwnProperty.call(
+              ADMIN_STATIC_FILES,
+              url.pathname,
+            ) ||
+            url.pathname.startsWith(
+              "/admin/api/",
+            )
+          ) {
+            await handleAdminApi(
+              req,
+              res,
+              url,
+            );
+
+            return;
+          }
+
+          /* ---------------------------------------------
              NOT FOUND
              --------------------------------------------- */
 
@@ -4651,12 +5716,16 @@ module.exports = {
   currentToolContextParts,
   expandHome,
   flushReasoningCache,
+  getAdminToken: () => ADMIN_TOKEN,
+  getConfig: () => CONFIG,
+  getRouter: () => ROUTER,
   getToolReasoning,
   loadReasoningCache,
   mapFinishReason,
   normalizeBaseUrl,
   openAiToAnthropic,
   reasoningFromMessage,
+  reloadConfig,
   requestAuthToken,
   saveReasoningCacheNow,
   setToolReasoning,

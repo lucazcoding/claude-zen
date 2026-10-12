@@ -177,9 +177,9 @@ function writeStateFile(statePath, payload) {
 }
 
 function setState(config, mode, providerId) {
-  if (mode !== "auto" && mode !== "manual") {
+  if (mode !== "auto" && mode !== "manual" && mode !== "custom") {
     console.error(
-      "[switcher-helper] Modo inválido. Use 'auto' ou 'manual'.",
+      "[switcher-helper] Modo inválido. Use 'auto', 'manual' ou 'custom'.",
     );
     process.exit(1);
   }

@@ -1,6 +1,6 @@
 # ClaudeZen Hybrid Router
 
-Proxy local para Claude Code com **roteamento híbrido entre múltiplos provedores de IA**, fallback automático, seleção manual de provider, cooldown, streaming em tempo real e **observabilidade por requisição** (estimativa local × uso real informado pelo provedor).
+Proxy local para Claude Code com **roteamento híbrido entre múltiplos provedores de IA**, modos flexíveis (`AUTO`, `MANUAL` e `CUSTOM`), fallback automático, seleção manual de provider, cooldown, streaming em tempo real e **observabilidade por requisição** (estimativa local × uso real informado pelo provedor).
 
 O Claude Code conversa somente com:
 
@@ -10,7 +10,7 @@ http://127.0.0.1:8787
 
 O ClaudeZen decide internamente qual provider e qual modelo serão utilizados.
 
-> **Status do projeto: em desenvolvimento ativo.** A versão atual está operacional (AUTO, MANUAL, fallback, cooldown, streaming e observabilidade) e já suporta **vários providers por plataforma** (por exemplo, dois modelos do OpenRouter — Qwen e Laguna — como contingências independentes). A configuração genérica, a validação na inicialização, o menu dinâmico do switcher e os testes automatizados foram implementados e validados com upstream simulado. Permanece pendente o teste com **falha real** de um provedor. Detalhes na [seção 20 do relatório técnico](RELATORIO.md#20-pontos-a-melhorar-em-desenvolvimento).
+> **Status do projeto: em desenvolvimento ativo.** A versão atual está operacional (AUTO, MANUAL, CUSTOM, fallback, cooldown, streaming e observabilidade) e já suporta **vários providers por plataforma** (por exemplo, dois modelos do OpenRouter — Qwen e Laguna — como contingências independentes). A configuração genérica, a validação na inicialização, o painel `/admin` com abas horizontais e grid responsivo, o switcher e os testes automatizados (100 testes) foram implementados e validados com upstream simulado. Permanece pendente o teste com **falha real** de um provedor. Detalhes na [seção 20 do relatório técnico](RELATORIO.md#20-pontos-a-melhorar-em-desenvolvimento).
 
 ---
 
@@ -26,6 +26,7 @@ flowchart TD
 
     D -->|AUTO| E{Contexto}
     D -->|MANUAL| F[Provider selecionado]
+    D -->|CUSTOM| J[Ordem de Fallback direta]
 
     E -->|< 100k tokens| G[APInex]
     E -->|>= 100k tokens| H[Google Gemini]
@@ -43,6 +44,11 @@ flowchart TD
     F --> H
     F --> K
     F --> L
+
+    J --> G
+    J --> H
+    J --> K
+    J --> L
 ```
 
 ---
@@ -50,12 +56,14 @@ flowchart TD
 # Características
 
 * [x] Proxy local para Claude Code
-* [x] Roteamento automático (AUTO) e manual (MANUAL)
+* [x] Roteamento automático (AUTO), manual (MANUAL) e por ordem direta (CUSTOM)
 * [x] APInex, Google Gemini e dois modelos do OpenRouter (Qwen e Laguna)
 * [x] Configuração genérica: vários providers da mesma plataforma
 * [x] Validação da configuração na inicialização
+* [x] Painel visual `/admin` com abas (Providers, Roteamento, Ordem de Fallback) e grid responsivo
+* [x] API administrativa local em `/admin/api` com autenticação por token
 * [x] Menu do switcher dinâmico (gerado a partir do config.json)
-* [x] Testes automatizados (`node --test`)
+* [x] Testes automatizados (100 testes via `node --test`)
 * [x] Fallback automático em cadeia
 * [x] Cooldown por provider
 * [x] Timeout por provider
@@ -145,15 +153,17 @@ Cada provider pode ter headers customizados opcionais via o campo `headers` (obj
 
 ### Passo a passo
 
+> **Alternativa recomendada (Tela visual `/admin`):** providers podem ser criados, testados e gerenciados visualmente direto na interface web em `http://127.0.0.1:8787/admin`, ou via [API administrativa](#api-administrativa) (`POST /admin/api/providers`), sem editar o `config.json` manualmente e sem reiniciar o servidor.
+
 1. **Escolha um ID único** para o provider. O ID é uma chave do objeto `providers` no `config.json` — não há validação de caracteres ou maiúsculas/minúsculas no código, mas use a [convenção de nomes](#convenção-de-nomes) abaixo.
 2. **Adicione a entrada** em `providers` no `config.json` usando o [template](#template) abaixo.
 3. **Adicione o ID ao `fallbackOrder`** na posição desejada. Se o provider não estiver no `fallbackOrder`, ele só poderá ser usado em modo **MANUAL** (e aparecerá um aviso na inicialização).
-4. **Crie a variável de ambiente** da chave:
+4. **Crie a variável de ambiente** da chave, ou guarde-a pela API (`PUT /admin/api/key/:id`):
    ```powershell
    setx CLAUDEZEN_ID_DO_PROVIDER_API_KEY "SUA_CHAVE"
    ```
    Feche e abra um terminal novo para que a variável seja carregada.
-5. **Reinicie o ClaudeZen.** O `config.json` é carregado uma única vez na inicialização, então qualquer alteração exige reinício. Confira o banner: o provider deve aparecer com `●` (chave detectada) ou `○` (chave ausente).
+5. **Reinicie o ClaudeZen** (se editou o `config.json` manualmente) ou recarregue via `POST /admin/api/reload`. Confira o banner: o provider deve aparecer com `●` (chave detectada) ou `○` (chave ausente).
 6. **Abra o `switcher.bat`.** O menu é gerado dinamicamente a partir do `config.json` (via `switcher-helper.js`), então o novo provider aparece automaticamente, sem alteração de código.
 7. **Teste em modo MANUAL** selecionando o novo provider no menu e confirme em `/router/status` que ele foi usado.
 
@@ -264,23 +274,30 @@ ClaudeZen/
 ├── server.js
 ├── router.js
 ├── validate-config.js
+├── secrets-store.js
 ├── config.json
 ├── switcher.bat
 ├── switcher-helper.js
 ├── routing-state.json
+├── admin/
+│   ├── index.html
+│   ├── admin.css
+│   └── admin.js
 └── test/
 ```
 
 | Arquivo              | Responsabilidade                                                                                                                              |
 | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `server.js`          | Servidor HTTP, conversão Anthropic ↔ OpenAI, streaming, endpoints, **apresentação dos logs**, integração com o router e validação na inicialização. |
-| `router.js`          | Escolha do provider, estimativa de contexto, fallback, cooldown, timeout, modos AUTO/MANUAL, métricas de sessão. **Não imprime o debug amigável.** |
+| `server.js`          | Servidor HTTP, conversão Anthropic ↔ OpenAI, streaming, rotas `/admin` e `/admin/api`, **apresentação dos logs**, integração com o router. |
+| `router.js`          | Escolha do provider, estimativa de contexto, fallback, cooldown, timeout, modos AUTO/MANUAL/CUSTOM, métricas de sessão.                       |
 | `validate-config.js` | Validação centralizada da configuração (erros que abortam e avisos).                                                                          |
+| `secrets-store.js`   | Armazenamento seguro de chaves de API fora do repositório (`~/.claudezen/secrets.json`).                                                       |
 | `config.json`        | Providers e regras do router.                                                                                                                 |
-| `routing-state.json` | Modo operacional atual (AUTO ou MANUAL), lido a cada requisição.                                                                              |
+| `routing-state.json` | Modo operacional atual (`auto`, `manual` ou `custom`), lido a cada requisição.                                                                |
 | `switcher.bat`       | Menu dinâmico de troca rápida de modo/provider.                                                                                                |
-| `switcher-helper.js` | Lê o `config.json` para o menu do switcher e grava o `routing-state.json`.                                                                    |
-| `test/`              | Testes automatizados (`node --test`).                                                                                                         |
+| `switcher-helper.js` | Lê o `config.json` para o switcher/API e grava o `routing-state.json`.                                                                        |
+| `admin/`             | Interface web administrativa em abas horizontais (HTML, CSS e JS puros, sem dependências).                                                   |
+| `test/`              | Testes automatizados (`node --test`, 100 testes).                                                                                             |
 
 Divisão de responsabilidades: **o router calcula; o server apresenta.** A estimativa de contexto, a divisão por categoria e a escolha do provider vêm do `router.js`; o `server.js` apenas formata e exibe, e traz o `usage` real que o provider informa no fim da resposta.
 
@@ -371,20 +388,43 @@ A derivação é registrada com um aviso no log de inicialização.
 
 # Modos de operação
 
+O ClaudeZen oferece 3 modos de roteamento para atender a diferentes necessidades operacionais:
+
+| Modo | Quem decide | Considera tokens/contexto? | Cooldown | Ordem de tentativa |
+| ---- | ----------- | -------------------------- | -------- | ------------------ |
+| `AUTO` | O router | Sim (< threshold vs ≥ threshold) | Respeitado (pula em cooldown) | `normalProvider` (ou `largeContextProvider`) seguido do `fallbackOrder` |
+| `CUSTOM` | Ordem de Fallback | **Não** (ignora tamanho do contexto) | Respeitado (pula em cooldown) | `fallbackOrder[0] → fallbackOrder[1] → fallbackOrder[2]...` |
+| `MANUAL` | O operador | **Não** (ignora tamanho do contexto) | **Ignorado** para o escolhido | Provider escolhido primeiro, seguido do `fallbackOrder` |
+
 ## AUTO
 
+Roteamento inteligente baseado no volume de tokens estimado do prompt:
+
 ```text
-Contexto < 100.000 tokens   → APInex
-Contexto >= 100.000 tokens  → Gemini
+Contexto < 100.000 tokens   → APInex (normalProvider)
+Contexto >= 100.000 tokens  → Gemini (largeContextProvider)
 
 Fallback: APInex → Gemini → OpenRouter Qwen → OpenRouter Laguna
 ```
 
-Cooldowns são respeitados: um provider em cooldown é pulado.
+Cooldowns são respeitados: um provider em cooldown é pulado automaticamente para o próximo da cadeia.
+
+## CUSTOM (Fallback Manual)
+
+Roteamento direto de acordo com a ordem da lista de contingência `fallbackOrder`, **ignorando qualquer regra de contexto ou threshold de tokens**:
+
+```text
+1ª tentativa: fallbackOrder[0]
+2ª tentativa: fallbackOrder[1]
+3ª tentativa: fallbackOrder[2]...
+```
+
+- **Para que serve?** Quando você quer determinar manualmente a sequência exata de chamadas de IA (ex: sempre chamar o Gemini primeiro e depois APInex, ou vice-versa), sem depender do cálculo de tokens, mas sem precisar fixar um provider único com override de cooldown.
+- Respeita cooldowns normais: se o primeiro da lista falhar e entrar em cooldown, as próximas requisições tentarão o segundo da lista.
 
 ## MANUAL
 
-O operador escolhe o provider e a escolha **tem prioridade sobre o cooldown**: o provider selecionado é sempre tentado primeiro. Se ele falhar, o restante da ordem de fallback é usado.
+O operador escolhe um provider específico e a escolha **tem prioridade sobre o cooldown**: o provider selecionado é sempre tentado primeiro (mesmo se estiver em cooldown). Se ele falhar, o restante da ordem de fallback é acionado.
 
 ```text
 switcher.bat
@@ -399,7 +439,7 @@ switcher.bat
 
 O menu é gerado dinamicamente a partir do `config.json` pelo `switcher-helper.js`: um provider por opção, na ordem em que aparecem em `providers`. Se o `config.json` estiver inválido ou ilegível, o switcher mostra um erro claro e sai.
 
-Trocar pelo switcher **não exige reiniciar** o servidor: o estado é lido na próxima requisição.
+> **Sem reiniciar o servidor:** Alternar o modo via `switcher.bat` ou pela interface `/admin` tem efeito imediato na próxima requisição (o arquivo `routing-state.json` é recarregado a cada chamada).
 
 ---
 
@@ -632,10 +672,124 @@ Invoke-RestMethod http://127.0.0.1:8787/router/status
 
 ---
 
+# Painel Administrativo e API Local
+
+O ClaudeZen oferece um **painel visual administrativo** em `/admin` e uma **API administrativa local** em `/admin/api` (no mesmo servidor do proxy, `127.0.0.1:8787`). Eles permitem gerenciar providers, chaves, ordem de fallback, alternar entre os modos AUTO, CUSTOM e MANUAL, testar conexões e recarregar a configuração **sem reiniciar o servidor**.
+
+## Interface Visual (`/admin`)
+
+- **Como acessar:** ao iniciar o servidor, o link pronto com o token de sessão é exibido no banner do terminal:
+  ```text
+  Admin : http://127.0.0.1:8787/admin?token=<TOKEN>
+  ```
+  Abra no seu navegador. O token é capturado da URL, salvo em `sessionStorage` e o parâmetro `?token=` é limpo da barra de endereços para não ficar exposto no histórico.
+- **Autenticação manual:** se acessar diretamente `http://127.0.0.1:8787/admin`, um campo permite colar o token exibido no banner do console.
+- **Estrutura em Abas Horizontais:** a interface é dividida em 3 abas principais com navegação instantânea e preservação da aba ativa em `sessionStorage`:
+  1. **Providers:**
+     * Grid responsivo moderno (2+ colunas em telas maiores).
+     * Cartões detalhados com ID, nome, modelo, endpoint, origem da chave (`armazenada localmente`, `env` ou `ausente` com últimos 4 dígitos) e contadores de requests/sucessos/falhas.
+     * Botão **Testar conexão** em cada provider que executa um ping upstream em tempo real, informando latência em ms e status HTTP retornado.
+  2. **Roteamento:**
+     * Distinção visual clara: o **Provider Principal** (usado no modo AUTO para contextos normais) é separado da **Ordem de Contingência (Fallback)**.
+     * Configuração de `normalProvider`, `largeContextProvider` e limiar de tokens (`largeContextThreshold`).
+     * Seletor de Modo: escolha direta entre **AUTO**, **CUSTOM (Fallback Manual)** ou **MANUAL** (com seleção do provedor específico).
+     * Card de ajuda explicativo que detalha as regras e o comportamento da opção selecionada antes de salvar.
+  3. **Ordem de Fallback:**
+     * Reordenação visual da lista de contingência com botões **↑** e **↓** e persistência imediata.
+     * Botão para abrir o modal de **Adicionar Provider**.
+- **Ações Globais e Modal:**
+  * **Adicionar Provider:** modal acessível com validação nativa para cadastrar novos providers (ID, nome, baseUrl, model, timeout, headers e chave opcional).
+  * **Excluir Provider:** remoção direta com confirmação nativa.
+  * **Recarregar Configuração:** botão para recarregar o `config.json` em memória a qualquer momento.
+  * **Zero dependências externas:** HTML/CSS/JS puros, ícones SVG inline, tema claro/escuro automático do sistema, sem fontes remotas ou bibliotecas de terceiros.
+- **Segurança da UI:** a chave de API nunca é exposta (campo `password`, limpo após envio); proibições estritas de `innerHTML` (manipulação segura do DOM via `createElement`/`textContent`); headers de segurança rígidos (`Content-Security-Policy: default-src 'self'`, `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`).
+
+## API administrativa
+
+Além da interface visual, todas as operações podem ser realizadas diretamente via chamadas HTTP (ex.: via `curl` ou scripts):
+
+- **Token administrativo:** gerado aleatoriamente a cada inicialização (`crypto.randomBytes(32)`). É exibido no banner de inicialização, junto com a URL `http://127.0.0.1:8787/admin?token=<TOKEN>`. Pode ser fixado via variável de ambiente `CLAUDEZEN_ADMIN_TOKEN`.
+- **Header obrigatório:** toda rota `/admin/api` exige `X-Admin-Token: <TOKEN>`. A comparação é feita em tempo constante (`crypto.timingSafeEqual`). Token ausente ou errado → `401`.
+- **Proteção contra DNS rebinding:** o header `Host` deve ser `127.0.0.1:<porta>` ou `localhost:<porta>`. Qualquer outro → `403`.
+- **Proteção CSRF:** em métodos que alteram estado (POST/PUT/PATCH/DELETE), se houver header `Origin`, ele deve coincidir com a origem do próprio servidor (`http://127.0.0.1:<porta>` ou `http://localhost:<porta>`). Diferente → `403`.
+- **Sem CORS aberto.** Corpo limitado a **64 KB**.
+
+## Armazenamento de chaves
+
+As chaves de API podem ser guardadas localmente em `%USERPROFILE%\.claudezen\secrets.json` (fora do repositório), em vez de (ou em adição a) variáveis de ambiente.
+
+**Ordem de resolução da chave** (para cada provider):
+
+1. Chave guardada no `secrets.json` (pelo ID do provider).
+2. Variável de ambiente indicada por `apiKeyEnv`.
+3. Se nenhuma existir, erro `API key environment variable <NOME> is missing.`
+
+O banner de inicialização indica a **origem** da chave por provider: `armazenada localmente`, `variável de ambiente <NOME>` ou `ausente`. Nunca é exibida a chave completa — no máximo os 4 últimos caracteres (`...ABCD`).
+
+> ⚠️ O `secrets.json` **não é criptografado**. Ele fica protegido apenas pelas permissões do perfil do usuário no Windows (modo `0600` quando possível). **Nunca copie este arquivo para o repositório** — ele já está no `.gitignore`.
+
+## Rotas
+
+| Método | Rota | Descrição |
+| ------ | ---- | --------- |
+| `GET` | `/admin/api/state` | Estado completo: providers (sem chave, apenas `hasKey`, `keySource`, `keyLast4`), `fallbackOrder`, `normalProvider`, `largeContextProvider`, modo atual e provider manual, status/cooldown de cada provider. |
+| `POST` | `/admin/api/providers` | Cria provider. Campos: `id`, `name`, `baseUrl`, `model`, `timeoutMs` (opcional), `headers` (opcional), `apiKey` (opcional). `409` se o ID já existir. O ID é adicionado ao fim do `fallbackOrder`. `apiKeyEnv` é gerado automaticamente como `CLAUDEZEN_<ID_MAIUSCULO>_API_KEY`. |
+| `PUT` | `/admin/api/providers/:id` | Edita campos (o `id` é imutável). A chave só é alterada se `apiKey` vier preenchida; vazia/ausente mantém a atual. |
+| `DELETE` | `/admin/api/providers/:id` | Remove provider. `409` se for `normalProvider`, `largeContextProvider` ou o provider manual ativo. Caso contrário, remove do config, do `fallbackOrder` e a chave do `secrets.json`. |
+| `PUT` | `/admin/api/key/:id` | Grava/atualiza apenas a chave do provider. |
+| `DELETE` | `/admin/api/key/:id` | Remove a chave guardada (volta a valer a variável de ambiente, se existir). |
+| `PUT` | `/admin/api/order` | Recebe a nova lista do `fallbackOrder` (IDs existentes, sem duplicados). |
+| `PUT` | `/admin/api/routing` | Atualiza `normalProvider`, `largeContextProvider` e `largeContextThreshold`. |
+| `PUT` | `/admin/api/mode` | `{ "mode": "auto" \| "manual" \| "custom", "provider"? }`. Reutiliza o mecanismo do `routing-state.json`/`switcher-helper`. |
+| `POST` | `/admin/api/providers/:id/test` | Faz uma requisição mínima de chat completions (max_tokens=1, timeout 20s) e retorna `{ ok, status, latencyMs, message }` sem vazar a chave nem o corpo da resposta. |
+| `POST` | `/admin/api/reload` | Recarrega o `config.json` + validação. |
+
+Toda alteração no config segue este fluxo:
+
+1. Monta o novo config em memória.
+2. Valida com `validate-config.js`; se inválido, responde `422` com as mensagens e **não grava**.
+3. Faz backup do `config.json` anterior em `.claudezen-backups/` (máx. 10, apagando os mais antigos).
+4. Grava de forma atômica (arquivo temporário + rename).
+5. Recarrega a quente.
+
+A **recarga a quente** (`reloadConfig`) troca a configuração em uso de forma atômica: requisições em andamento terminam com a config antiga; novas usam a nova. O estado de **cooldown é preservado por ID** de provider (providers removidos têm o estado descartado).
+
+## Exemplos (PowerShell)
+
+```powershell
+$token = "<TOKEN do banner>"
+$h = @{ "X-Admin-Token" = $token; "Content-Type" = "application/json" }
+
+# Estado
+Invoke-RestMethod http://127.0.0.1:8787/admin/api/state -Headers $h
+
+# Criar provider
+$body = @{ id="meuprovider"; name="Meu Provider"; baseUrl="https://api.exemplo.com/v1"; model="meu-modelo"; apiKey="sk-xxx" } | ConvertTo-Json
+Invoke-RestMethod http://127.0.0.1:8787/admin/api/providers -Method POST -Headers $h -Body $body
+
+# Testar conexão
+Invoke-RestMethod http://127.0.0.1:8787/admin/api/providers/meuprovider/test -Method POST -Headers $h
+
+# Alternar modo para MANUAL
+Invoke-RestMethod http://127.0.0.1:8787/admin/api/mode -Method PUT -Headers $h -Body '{"mode":"manual","provider":"meuprovider"}'
+
+# Alternar modo para CUSTOM (fallback manual direto)
+Invoke-RestMethod http://127.0.0.1:8787/admin/api/mode -Method PUT -Headers $h -Body '{"mode":"custom"}'
+
+# Retornar ao modo AUTO
+Invoke-RestMethod http://127.0.0.1:8787/admin/api/mode -Method PUT -Headers $h -Body '{"mode":"auto"}'
+
+# Recarregar
+Invoke-RestMethod http://127.0.0.1:8787/admin/api/reload -Method POST -Headers $h
+```
+
+---
+
 # Segurança
 
 * Não armazene API keys no `config.json`.
 * Não faça commit de `.env` nem de arquivos com `sk-...` / `AIza...`.
+* O arquivo `secrets.json` (chaves guardadas localmente) fica em `%USERPROFILE%\.claudezen\`, fora do repositório.
 
 ```gitignore
 routing-state.json
@@ -643,6 +797,8 @@ routing-state.json
 *.backup.json
 .env
 .env.*
+.claudezen-backups/
+secrets.json
 ```
 
 ---
@@ -665,11 +821,15 @@ Get-Content C:\AI_config\ClaudeZen\routing-state.json
 
 ## Reiniciar ou não?
 
-| Alteração                  | Reiniciar?                                       |
-| -------------------------- | ------------------------------------------------ |
-| `switcher.bat`             | Não. Vale na próxima requisição.                 |
-| `config.json`              | Sim.                                             |
-| `router.js` / `server.js`  | Sim (Ctrl+C e `node server.js`).                 |
+| Alteração                                            | Reiniciar o servidor?                            |
+| ---------------------------------------------------- | ------------------------------------------------ |
+| `switcher.bat`                                       | **Não**. Vale na próxima requisição.             |
+| Alternar modo via `/admin` ou `/admin/api/mode`      | **Não**. Vale na próxima requisição.             |
+| `config.json` via API administrativa (`/admin/api`)  | **Não**. Recarga a quente atômica em memória.    |
+| `config.json` (edição manual externa em arquivo)     | **Sim** (ou clique em "Recarregar Configuração").|
+| Código do servidor (`server.js`, `router.js`, etc.)  | **Sim** (Ctrl+C e `node server.js`).             |
+
+> **Nota importante sobre o hot-reload:** O recarregamento a quente atualiza as definições de providers, regras e chaves em memória. No entanto, atualizações na lógica de código Node.js (`server.js`, `router.js`, etc.) continuam exigindo reiniciar o processo para carregar os novos arquivos.
 
 ---
 
@@ -708,9 +868,9 @@ Sem dependências externas (usa apenas o runner nativo `node --test`):
 node --test
 ```
 
-Cobre roteamento, validação da configuração, derivação do `fallbackOrder`, fallback em cadeia, cooldown, modo MANUAL e o envio do modelo correto quando dois providers compartilham o mesmo `baseUrl`. Os providers de roteamento são **upstreams HTTP locais simulados** em `127.0.0.1` (portas livres), sem tocar em chaves reais.
+São **100 testes automatizados** cobrindo roteamento, validação da configuração, derivação do `fallbackOrder`, fallback em cadeia, cooldown, modos AUTO, MANUAL e CUSTOM, envio do modelo correto quando dois providers compartilham o mesmo `baseUrl`, endpoints da API administrativa `/admin/api`, segurança contra CSRF/DNS rebinding e a interface visual `/admin`. Os providers de roteamento são **upstreams HTTP locais simulados** em `127.0.0.1` (portas livres), sem tocar em chaves reais.
 
-Para checar apenas o arquivo novo:
+Para checar apenas os testes de roteamento e providers:
 
 ```powershell
 node --test test/generic-providers.test.js
@@ -733,6 +893,8 @@ node server.js
 | AUTO → APInex, requisição real pelo Claude Code                | **Provider real**     | ✅        |
 | MANUAL → Gemini                                                | **Provider real**     | ✅        |
 | Retorno para AUTO                                              | **Provider real**     | ✅        |
+| Modo CUSTOM segue estritamente `fallbackOrder` sem tokens      | Upstream simulado     | ✅        |
+| Painel visual `/admin` com abas e segurança (zero dependências)| Upstream simulado/Local| ✅       |
 | Usage upstream × estimativa                                    | **Provider real**     | ✅ (+1,2%)|
 | Streaming em tempo real                                        | Upstream simulado     | ✅        |
 | Cancelamento do cliente propagado ao upstream                  | Upstream simulado     | ✅        |
@@ -763,20 +925,23 @@ node server.js
 ```text
 [x] Contagem real de tokens (usage informado pelo upstream)
 [x] Streaming em tempo real
+[x] Cancelamento propagado (abort no upstream)
+[x] Fallback automático em cadeia
+[x] Suporte a múltiplos providers por plataforma
 [x] Observabilidade por requisição
 [x] Configuração genérica: vários modelos da mesma plataforma
 [x] Validação da configuração na inicialização
 [x] Menu do switcher gerado a partir do config.json
-[x] Limpeza de resquícios do projeto original
-[x] Testes automatizados (`node --test`)
+[x] Testes automatizados (100 testes com node --test)
+[x] API administrativa local (/admin/api) e armazenamento seguro de chaves
+[x] Dashboard web / tela de configuração local (/admin) com abas e grid
+[x] Modo CUSTOM (fallback manual por ordem direta da lista)
+[ ] Teste com falha real de provedor (429/5xx)
 [ ] Circuit breaker completo
 [ ] Health checks ativos
-[ ] Retry-After
-[ ] Rate-limit headers
+[ ] Retry-After e rate-limit headers
 [ ] Controle de quota
-[ ] Dashboard web
-[ ] Métricas persistentes
-[ ] Histórico de requests
+[ ] Métricas persistentes entre reinicializações
 [ ] Pesos por provider
 [ ] Estratégias de custo / por modelo
 [ ] Mais providers
