@@ -122,6 +122,138 @@ Provedor de reserva no OpenRouter, após o Qwen.
 
 > Dois providers do OpenRouter compartilham o mesmo `baseUrl`, mas são entidades independentes: cada um tem `model`, `apiKeyEnv`, `name` e posição própria no `fallbackOrder`. O router os identifica pelo **ID** (`providers[id]`), não pela URL. Chaves diferentes da mesma conta podem compartilhar o limite dos modelos gratuitos do OpenRouter.
 
+> Quer adicionar outro provider ou modelo? Veja [Como adicionar um novo provider ou modelo](#como-adicionar-um-novo-provider-ou-modelo).
+
+---
+
+## Como adicionar um novo provider ou modelo
+
+Use este guia quando precisar:
+
+- **Trocar ou adicionar uma IA de outra plataforma** (ex.: adicionar um provider da Together.ai).
+- **Adicionar outro modelo de uma plataforma que já existe** (ex.: um terceiro modelo do OpenRouter).
+
+Em ambos os casos, é um **novo provider independente**, com ID, `model` e `apiKeyEnv` próprios. Apenas o `baseUrl` pode se repetir (como acontece com os dois providers do OpenRouter).
+
+### Requisito de compatibilidade
+
+O ClaudeZen envia uma requisição **POST** para `{baseUrl}/chat/completions` (o `baseUrl` é normalizado: se não terminar em `/v1`, esse sufixo é adicionado automaticamente). O corpo da requisição e os headers seguem o formato da **API de Chat Completions da OpenAI** (`Authorization: Bearer <chave>`, `Content-Type: application/json`).
+
+> **Limitação atual:** só há suporte a providers com API **compatível com a OpenAI**. Não existe adaptação de formato por provider. Se a plataforma usar um formato diferente, será necessário adaptar o `router.js` (fora do escopo deste guia).
+
+Cada provider pode ter headers customizados opcionais via o campo `headers` (objeto), que são mesclados aos headers padrão.
+
+### Passo a passo
+
+1. **Escolha um ID único** para o provider. O ID é uma chave do objeto `providers` no `config.json` — não há validação de caracteres ou maiúsculas/minúsculas no código, mas use a [convenção de nomes](#convenção-de-nomes) abaixo.
+2. **Adicione a entrada** em `providers` no `config.json` usando o [template](#template) abaixo.
+3. **Adicione o ID ao `fallbackOrder`** na posição desejada. Se o provider não estiver no `fallbackOrder`, ele só poderá ser usado em modo **MANUAL** (e aparecerá um aviso na inicialização).
+4. **Crie a variável de ambiente** da chave:
+   ```powershell
+   setx CLAUDEZEN_ID_DO_PROVIDER_API_KEY "SUA_CHAVE"
+   ```
+   Feche e abra um terminal novo para que a variável seja carregada.
+5. **Reinicie o ClaudeZen.** O `config.json` é carregado uma única vez na inicialização, então qualquer alteração exige reinício. Confira o banner: o provider deve aparecer com `●` (chave detectada) ou `○` (chave ausente).
+6. **Abra o `switcher.bat`.** O menu é gerado dinamicamente a partir do `config.json` (via `switcher-helper.js`), então o novo provider aparece automaticamente, sem alteração de código.
+7. **Teste em modo MANUAL** selecionando o novo provider no menu e confirme em `/router/status` que ele foi usado.
+
+### Template
+
+```json
+"id-do-provider": {
+  "name": "Nome exibido",
+  "baseUrl": "https://api.exemplo.com/v1",
+  "model": "nome-do-modelo",
+  "apiKeyEnv": "CLAUDEZEN_ID_DO_PROVIDER_API_KEY",
+  "timeoutMs": 600000
+}
+```
+
+| Campo | Obrigatório | Descrição |
+| ----- | ----------- | --------- |
+| `baseUrl` | Sim | URL base da API. Se não terminar em `/v1`, esse sufixo é adicionado. |
+| `model` | Sim | Nome do modelo na plataforma. |
+| `apiKeyEnv` | Sim | Nome da variável de ambiente que contém a chave. |
+| `name` | Não | Nome exibido no banner e nos logs. Se ausente, usa o ID. |
+| `timeoutMs` | Não | Timeout da requisição em ms. Padrão: `600000` (10 min) ou o valor de `upstreamTimeoutMs` do config. |
+| `headers` | Não | Objeto com headers HTTP customizados para este provider. |
+
+### Exemplo: adicionar um terceiro modelo do OpenRouter
+
+Suponha um modelo fictício `meu-modelo-demo` no OpenRouter:
+
+**1. Entrada em `providers`:**
+
+```json
+"openrouter-modelo-demo": {
+  "name": "OpenRouter Modelo Demo",
+  "baseUrl": "https://openrouter.ai/api/v1",
+  "model": "meu-modelo-demo",
+  "apiKeyEnv": "CLAUDEZEN_OPENROUTER_MODELO_DEMO_API_KEY",
+  "timeoutMs": 600000
+}
+```
+
+**2. Linha no `fallbackOrder`:**
+
+```json
+"fallbackOrder": ["apinex", "gemini", "openrouter-qwen", "openrouter-laguna", "openrouter-modelo-demo"]
+```
+
+**3. Variável de ambiente:**
+
+```powershell
+setx CLAUDEZEN_OPENROUTER_MODELO_DEMO_API_KEY "SUA_CHAVE"
+```
+
+### Convenção de nomes
+
+> Recomendação, não regra imposta pelo código:
+
+- **ID:** minúsculas com hífen, no formato `plataforma-modelo` (ex.: `openrouter-qwen`, `gemini`).
+- **Variável de ambiente:** `CLAUDEZEN_<ID_EM_MAIÚSCULAS>_API_KEY` (ex.: `CLAUDEZEN_OPENROUTER_QWEN_API_KEY`).
+
+O código não valida esses formatos — são apenas convenções para manter a consistência.
+
+### Erros e avisos comuns
+
+Mensagens reais do `validate-config.js` (executado na inicialização):
+
+| Tipo | Mensagem | Ação |
+| ---- | -------- | ---- |
+| Erro | `Nenhum provider configurado: o objeto "providers" está ausente ou vazio no config.json.` | Adicione ao menos um provider em `providers`. |
+| Erro | `Provider "<id>": a entrada não é um objeto válido no config.json.` | Verifique se a entrada do provider é um objeto JSON válido. |
+| Erro | `Provider "<id>": o campo "baseUrl" está ausente ou vazio.` | Adicione o campo `baseUrl`. |
+| Erro | `Provider "<id>": o campo "model" está ausente ou vazio.` | Adicione o campo `model`. |
+| Erro | `Provider "<id>": o campo "apiKeyEnv" está ausente ou vazio.` | Adicione o campo `apiKeyEnv`. |
+| Erro | `O campo "routing.fallbackOrder" deve ser uma lista não vazia de IDs de providers.` | Corrija o `fallbackOrder` para ser um array com ao menos um ID. |
+| Erro | `"routing.fallbackOrder" contém um elemento inválido (esperado um ID de provider como string): <valor>.` | Use apenas strings (IDs) no `fallbackOrder`. |
+| Erro | `"fallbackOrder" referencia o provider "<id>", que não existe em "providers".` | Remova o ID do `fallbackOrder` ou crie o provider correspondente. |
+| Erro | `"routing.normalProvider" deve ser um ID de provider (string), recebeu: <valor>.` | Corrija `normalProvider` para ser uma string com um ID válido. |
+| Erro | `"routing.normalProvider" aponta para o provider "<id>", que não existe em "providers".` | Use um ID que exista em `providers`. (Mesmo para `largeContextProvider`.) |
+| Aviso | `"fallbackOrder" contém o ID "<id>" mais de uma vez. Entradas duplicadas são ignoradas.` | Remova a ocorrência duplicada. |
+| Aviso | `Provider "<id>" está declarado em "providers", mas não aparece no "fallbackOrder". Ele será usado apenas em modo MANUAL.` | Adicione o ID ao `fallbackOrder` se quiser que ele participe do fallback automático. |
+
+Além disso, se a variável de ambiente da chave não estiver definida:
+
+- No **banner de inicialização**: o provider aparece com `○` e o aviso `⚠️  chave ausente: defina a variável <NOME>`.
+- Em **tempo de requisição**: a chamada falha com status `500`, type `configuration_error` e mensagem `API key environment variable <NOME> is missing.`
+
+### Checklist rápido
+
+Antes de commitar, confira:
+
+- [ ] ID único e sem conflito com providers existentes
+- [ ] Entrada completa em `providers` (`baseUrl`, `model`, `apiKeyEnv`)
+- [ ] ID adicionado ao `fallbackOrder` (se for participar do fallback automático)
+- [ ] Variável de ambiente criada (`setx ...`) e terminal reiniciado
+- [ ] Banner de inicialização mostra `●` para o novo provider
+- [ ] Teste em modo MANUAL com o novo provider funciona
+- [ ] `node --test` passa sem falhas
+- [ ] Nenhuma chave de API real no repositório (use sempre `SUA_CHAVE`)
+
+> **Atenção:** modelos gratuitos de uma mesma plataforma podem compartilhar o limite de requisições mesmo com chaves diferentes, se as chaves forem da mesma conta.
+
 ---
 
 # Estrutura de arquivos
@@ -420,6 +552,8 @@ Para depurar o `usage` bruto recebido do provider:
 ```powershell
 $env:CLAUDE_OPENCODE_LOG_USAGE = "1"
 ```
+
+> O nome `CLAUDE_OPENCODE_LOG_USAGE` é mantido por compatibilidade com a infraestrutura original do projeto.
 
 ---
 

@@ -81,6 +81,18 @@ Está em cooldown?   O contexto é grande?   O anterior falhou?
 
 > **Nota:** dois providers do OpenRouter compartilham o mesmo `baseUrl`, mas são entidades independentes (cada um com `model`, `apiKeyEnv`, `name` e posição própria no `fallbackOrder`). O router os identifica pelo **ID** (`providers[id]`), não pela URL. Isso permite usar vários modelos da mesma plataforma como contingências separadas. Detalhes na [seção 20.1](#201-configuração-genérica-para-múltiplos-modelos-da-mesma-plataforma).
 
+## 3.1 Como adicionar um provider
+
+O princípio de design é simples: **providers são identificados por ID, não por URL**. Cada entrada em `providers` é uma entidade independente.
+
+- **Campos obrigatórios** (validados em `validate-config.js`, abortam a inicialização se ausentes): `baseUrl`, `model`, `apiKeyEnv`.
+- **Campos opcionais:** `name` (exibição), `timeoutMs` (padrão 600000ms ou `upstreamTimeoutMs`), `headers` (objeto com headers customizados).
+- **Roteamento:** `normalProvider` e `largeContextProvider` derivam do primeiro e segundo provider (respectivamente) se não definidos explicitamente. O `fallbackOrder` define a ordem de contingência; um provider fora dessa lista só é usado em modo MANUAL (com aviso na inicialização).
+- **Validação:** ocorre na inicialização via `validate-config.js` — erros abortam com `process.exit(1)`, avisos apenas alertam.
+- **Chave ausente:** o banner mostra `○` com aviso; a requisição falha em runtime com status 500 (`configuration_error`).
+
+Guia passo a passo completo (template, exemplo, erros comuns e checklist) no README: [Como adicionar um novo provider ou modelo](README.md#como-adicionar-um-novo-provider-ou-modelo).
+
 ---
 
 # 4. Arquitetura de arquivos
@@ -365,7 +377,7 @@ Neste exemplo, pelos horários do log, o provider levou ~3 s para iniciar a resp
 * **Box de erro** (`CLAUDEZEN REQUEST #n ERROR`): endpoint, status, provider/modelo (se já roteado), duração e mensagem.
 * **Encerramento (Ctrl+C):** salva o cache de reasoning, mostra o resumo da sessão e finaliza.
 * **Logs técnicos do router** (`[CONTEXT]`, `[ROUTE]`, `[PROVIDER]`, `[STATUS]`, `[ROUTER]`): silenciosos por padrão; ativáveis com `CLAUDEZEN_VERBOSE=1` ou `"routing": { "verbose": true }`.
-* **Usage bruto do provider:** `CLAUDE_OPENCODE_LOG_USAGE=1`.
+* **Usage bruto do provider:** `CLAUDE_OPENCODE_LOG_USAGE=1`. O nome é mantido por compatibilidade com a infraestrutura original do projeto.
 
 Observação: com streaming em tempo real e requisições paralelas do Claude Code, blocos de requisições diferentes podem se intercalar no terminal. Por isso o bloco de usage traz o número da requisição (`USAGE — REQUEST #n`).
 
@@ -498,7 +510,7 @@ apinex → gemini → openrouter-qwen → openrouter-laguna
 | Chaves de API | Uma variável por provider. | Uma variável por provider: `CLAUDEZEN_OPENROUTER_QWEN_API_KEY` e `CLAUDEZEN_OPENROUTER_LAGUNA_API_KEY`. `OPENROUTER_API_KEY` deixou de ser usada. Atenção: chaves da mesma conta podem compartilhar o limite dos modelos gratuitos. |
 | Modelos em `/v1/models` | Lista fixa no config. | Se `models` ausente, deriva dos `model` de todos os providers (sem duplicados). |
 | Resquícios do projeto original | Nomes DeepSeek/OpenCode no cache e na lista padrão. | Cache renomeado para `~/.claudezen/reasoning-cache.json`; `DEFAULT_MODELS` removido; `owned_by` neutro. |
-| Testes automatizados | Validação manual com upstream simulado. | `test/generic-providers.test.js` (17 cenários) com upstream local simulado; `node --test`. |
+| Testes automatizados | Validação manual com upstream simulado. | `test/generic-providers.test.js` (17 cenários) e `test/server.test.js`; total de **49 testes** com `node --test`. |
 
 **Configuração final dos providers:**
 
@@ -547,15 +559,13 @@ apinex → gemini → openrouter-qwen → openrouter-laguna
 }
 ```
 
-## 20.2 Pontos identificados (pendentes)
+## 20.2 Pontos pendentes
 
 | Item | Descrição |
 | ---- | --------- |
-| Teste com falha real de provedor | Fallback validado em ambiente simulado; falta validar com 429/5xx reais (já listado na seção 17). |
-| Validação da configuração na inicialização | **Implementado** em `validate-config.js` (erros abortam; avisos não). Mantido aqui como referência de comportamento. |
-| Menu dinâmico do `switcher.bat` | **Implementado** via `switcher-helper.js`. Referência mantida. |
-| Limpeza de resquícios do projeto original | **Implementado** (cache renomeado, `DEFAULT_MODELS` removido, `owned_by` neutro). Referência mantida. |
-| Testes automatizados | **Implementado** (`test/generic-providers.test.js`; `node --test`). Referência mantida. |
+| Teste com falha real de provedor | O fallback foi validado com upstream simulado. Falta validar com 429/5xx reais (veja a seção 17). |
+| Separar plataforma de provider | Proposta descrita na seção 20.1 (`platforms` + `providers`), ainda não implementada. |
+| Evoluções de resiliência e observabilidade | Circuit breaker, health checks ativos, `Retry-After`, dashboard e métricas persistentes (veja a seção 21). |
 
 ---
 
