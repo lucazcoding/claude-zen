@@ -8,26 +8,28 @@
 **Arquitetura:** Proxy local + Router multi-provider
 **Porta local:** `127.0.0.1:8787`
 **Dependências adicionais:** nenhuma
-**Última atualização:** 11/10/2026
-**Status:** Operacional e **em desenvolvimento ativo**. Fallback em cadeia validado em ambiente simulado. A **configuração genérica para múltiplos providers por plataforma** foi implementada e testada (dois modelos do OpenRouter como providers independentes), com validação da configuração na inicialização, menu dinâmico no switcher e testes automatizados. Permanece pendente o **teste com falha real de provedor** (429/5xx reais). Ver [seção 20](#20-pontos-a-melhorar-em-desenvolvimento).
+**Última atualização:** 12/10/2026
+**Status:** Operacional e **em desenvolvimento ativo**. Fallback em cadeia validado em ambiente simulado. A **configuração genérica para múltiplos providers por plataforma** foi implementada e testada (dois modelos do OpenRouter como providers independentes), com validação da configuração na inicialização, menu dinâmico no switcher, painel web administrativo `/admin` com abas horizontais, modo `CUSTOM` (fallback manual por ordem direta) e **100 testes automatizados** passando via `node --test`. Permanece pendente o **teste com falha real de provedor** (429/5xx reais). Ver [seção 20](#20-pontos-a-melhorar-em-desenvolvimento).
 
 ---
 
 # 1. Visão geral
 
-O ClaudeZen foi adaptado de um proxy que encaminhava as requisições para um único upstream para uma arquitetura de roteamento híbrido com três provedores.
+O ClaudeZen foi adaptado de um proxy que encaminhava as requisições para um único upstream para uma arquitetura de roteamento híbrido com múltiplos provedores.
 
 A arquitetura atual permite:
 
 * utilização automática do APInex para tarefas normais;
 * utilização automática do Gemini para contextos grandes;
-* fallback automático entre provedores;
-* seleção manual de um provider;
+* fallback automático entre provedores em cadeia;
+* seleção manual de um provider (`MANUAL`);
+* roteamento estrito pela ordem de contingência ignorando regras de contexto (`CUSTOM`);
 * cooldown temporário de providers que apresentaram falhas;
 * **streaming em tempo real**, com cancelamento propagado ao upstream;
 * **observabilidade por requisição**: contexto, tools, roteamento, uso real informado pelo provedor e tempo;
+* painel visual administrativo em `/admin` e API local em `/admin/api`;
 * monitoramento via endpoint `/router/status`;
-* operação sem dependências externas adicionais;
+* operação sem dependências externas adicionais (zero npm em produção);
 * preservação da configuração existente do Claude Code.
 
 ```text
@@ -42,12 +44,13 @@ A arquitetura atual permite:
 │                    CLAUDEZEN PROXY (server.js)          │
 │  Conversão Anthropic/OpenAI · Streaming · Reasoning     │
 │  cache · Observabilidade (apresentação dos logs)        │
+│  Painel /admin · API /admin/api · Hot reload config     │
 └─────────────────────────────┬───────────────────────────┘
                               ▼
 ┌─────────────────────────────────────────────────────────┐
 │                    REQUEST ROUTER (router.js)           │
-│  Estimativa de contexto · Modo AUTO/MANUAL · Cooldown   │
-│  Fallback · Timeout · Métricas de sessão                │
+│  Estimativa de contexto · AUTO / MANUAL / CUSTOM        │
+│  Fallback · Timeout · Cooldown · Métricas de sessão     │
 └──────────────────────────────┬──────────────────────────┘
               ┌────────────────┼────────────────┐
               ▼                ▼                ▼
@@ -127,7 +130,7 @@ C:\AI_config\ClaudeZen\
 
 * analisar o payload e **estimar** o contexto (bytes ÷ 4);
 * separar a estimativa em `system`, `messages`, `tools` e `other`;
-* escolher o provider (AUTO/MANUAL), aplicar cooldown e fallback;
+* escolher o provider (AUTO/MANUAL/CUSTOM), aplicar cooldown e fallback;
 * aplicar timeout por provider;
 * manter métricas de sessão e por provider;
 * devolver em `call()` o objeto da requisição (`response`, `provider`, `model`, `contextTokens`, `context`, `routeReason`, `mode`, `fallbackCount`, `skipped`, `observability`);
@@ -137,6 +140,7 @@ C:\AI_config\ClaudeZen\
 
 * servidor HTTP e infraestrutura original do ClaudeZen;
 * conversão Anthropic ↔ OpenAI e streaming;
+* rotas do painel web `/admin` e API administrativa `/admin/api`;
 * **apresentar** o bloco de observabilidade, o banner e o resumo de sessão;
 * ler o `usage` real do upstream e compará-lo com a estimativa do router.
 
@@ -146,6 +150,7 @@ C:\AI_config\ClaudeZen\
 
 ```json
 { "mode": "auto",   "provider": null }
+{ "mode": "custom", "provider": null }
 { "mode": "manual", "provider": "gemini" }
 ```
 
@@ -153,10 +158,11 @@ C:\AI_config\ClaudeZen\
 
 ```text
 1 - AUTO     2 - APInex     3 - Google Gemini
-4 - OpenRouter     5 - STATUS     0 - SAIR
+4 - OpenRouter Qwen         5 - OpenRouter Laguna
+6 - STATUS                  0 - SAIR
 ```
 
-Trocar o modo não exige reiniciar o servidor.
+Trocar o modo pelo switcher ou pela interface `/admin` não exige reiniciar o servidor.
 
 ---
 
@@ -263,14 +269,32 @@ Após uma falha recuperável o provider entra em cooldown de **300 s** (5 min). 
 
 ---
 
-# 10. AUTO × MANUAL
+# 10. Modos de Operação: AUTO × CUSTOM × MANUAL
 
-| Modo   | Quem decide     | Cooldown                                   |
-| ------ | --------------- | ------------------------------------------ |
-| AUTO   | O router        | Respeitado (provider em cooldown é pulado) |
-| MANUAL | O operador      | **Ignorado** para o provider escolhido     |
+O ClaudeZen implementa três regras de negócio distintas para resolução do provider inicial:
 
-No MANUAL o provider escolhido é sempre tentado primeiro; se falhar, o restante da ordem de fallback é utilizado. Isso evita o cenário em que o operador seleciona o Gemini e o sistema responde "em cooldown" sem sequer tentá-lo.
+| Modo | Quem decide | Avalia tokens/contexto? | Cooldown | Ordem de tentativa |
+| ---- | ----------- | ----------------------- | -------- | ------------------ |
+| **`AUTO`** | O router | Sim (`< 100k` vs `≥ 100k`) | Respeitado (pula em cooldown) | `normalProvider` (ou `largeContextProvider`) seguido do `fallbackOrder` |
+| **`CUSTOM`** | Ordem de Fallback | **Não** (ignora volume de tokens) | Respeitado (pula em cooldown) | `fallbackOrder[0] → fallbackOrder[1] → fallbackOrder[2]...` |
+| **`MANUAL`** | O operador | **Não** (ignora volume de tokens) | **Ignorado** para o escolhido | Provider escolhido sempre primeiro, seguido do `fallbackOrder` |
+
+### 10.1 Modo AUTO
+É o modo padrão e dinâmico. O router calcula o tamanho estimado do prompt:
+- Prompts com menos de `largeContextThreshold` (100.000 tokens) vão para o `normalProvider` (ex.: APInex).
+- Prompts com `largeContextThreshold` ou mais vão diretamente para o `largeContextProvider` (ex.: Gemini).
+- Se o provider inicial falhar com erro recuperável (429/5xx), a cadeia de `fallbackOrder` é percorrida em ordem. Provedores em cooldown são ignorados.
+
+### 10.2 Modo CUSTOM (Fallback Manual)
+Criado para permitir ao operador ditar a ordem exata das chamadas de IA sem interferência do cálculo de contexto por tokens:
+- A chamada sempre se inicia estritamente pelo primeiro item de `fallbackOrder` (`candidateOrder = fallbackOrder.slice()`).
+- O volume de tokens (pequeno ou grande) não altera a escolha do primeiro provedor.
+- Respeita o cooldown normalmente: se o primeiro da lista falhar e entrar em cooldown, as requisições seguintes usarão o segundo provider da lista até o cooldown expirar.
+
+### 10.3 Modo MANUAL
+O operador força a seleção de um provedor específico (via `switcher.bat` ou painel `/admin`):
+- O provedor escolhido tem prioridade máxima e **ignora qualquer cooldown existente** (sempre tenta a chamada real ao upstream).
+- Se a chamada ao provedor manual falhar, o sistema não desiste: aciona automaticamente a contingência percorrendo o restante do `fallbackOrder`.
 
 ---
 
@@ -553,7 +577,7 @@ apinex → gemini → openrouter-qwen → openrouter-laguna
 | Chaves de API | Uma variável por provider. | Uma variável por provider: `CLAUDEZEN_OPENROUTER_QWEN_API_KEY` e `CLAUDEZEN_OPENROUTER_LAGUNA_API_KEY`. `OPENROUTER_API_KEY` deixou de ser usada. Atenção: chaves da mesma conta podem compartilhar o limite dos modelos gratuitos. |
 | Modelos em `/v1/models` | Lista fixa no config. | Se `models` ausente, deriva dos `model` de todos os providers (sem duplicados). |
 | Resquícios do projeto original | Nomes DeepSeek/OpenCode no cache e na lista padrão. | Cache renomeado para `~/.claudezen/reasoning-cache.json`; `DEFAULT_MODELS` removido; `owned_by` neutro. |
-| Testes automatizados | Validação manual com upstream simulado. | `test/generic-providers.test.js` (17 cenários) e `test/server.test.js`; total de **49 testes** com `node --test`. |
+| Testes automatizados | Validação manual com upstream simulado. | `test/generic-providers.test.js`, `test/server.test.js`, `test/admin-api.test.js` e `test/admin-ui.test.js`; total de **100 testes** com `node --test` (0 falhas). |
 
 **Configuração final dos providers:**
 
@@ -612,14 +636,14 @@ apinex → gemini → openrouter-qwen → openrouter-laguna
 
 ---
 
-## 20.3 API administrativa, armazenamento de chaves e tela visual `/admin` — **Etapas 1 e 2 concluídas**
+## 20.3 API administrativa, armazenamento de chaves, modo CUSTOM e interface visual `/admin` — **Etapas 1, 2 e 3 concluídas**
 
-**Motivação.** Permitir gerenciar providers, chaves, ordem de fallback e modo AUTO/MANUAL sem editar o `config.json` manualmente nem reiniciar o servidor, oferecendo tanto uma API REST local quanto uma interface web visual completa e segura.
+**Motivação.** Permitir gerenciar providers, chaves, ordem de fallback e modos operacionais (`AUTO`, `CUSTOM` e `MANUAL`) sem editar o `config.json` manualmente nem reiniciar o servidor, oferecendo tanto uma API REST local quanto uma interface web visual completa, modular e segura.
 
 **Implementado na Etapa 1 (Backend & API):**
 
 - **`secrets-store.js`:** armazena chaves em `%USERPROFILE%\.claudezen\secrets.json` (fora do repositório), com escrita atômica e permissões restritas. A chave guardada tem prioridade sobre a variável de ambiente.
-- **API administrativa `/admin/api`:** CRUD de providers, gestão de chaves, reordenação do `fallbackOrder`, definição de `normalProvider`/`largeContextProvider`, alternância AUTO/MANUAL, teste de conexão e recarga. Toda alteração valida com `validate-config.js` antes de gravar; gravação atômica com backup em `.claudezen-backups/` (máx. 10).
+- **API administrativa `/admin/api`:** CRUD de providers, gestão de chaves, reordenação do `fallbackOrder`, definição de `normalProvider`/`largeContextProvider`, alternância de modos (`AUTO`, `CUSTOM`, `MANUAL`), teste de conexão e recarga. Toda alteração valida com `validate-config.js` antes de gravar; gravação atômica com backup em `.claudezen-backups/` (máx. 10).
 - **Segurança da API:** token aleatório por inicialização (comparação em tempo constante), validação de `Host` (DNS rebinding) e `Origin` (CSRF), corpo limitado a 64 KB, sem CORS aberto.
 - **Recarga a quente:** `reloadConfig()` troca a configuração atomicamente; cooldown preservado por ID de provider.
 - **Testes da API:** 29 testes em `test/admin-api.test.js` (segurança, CRUD, validação, chaves, fallback, routing, mode, delete, cooldown, backups, conexão upstream 200/503).
@@ -634,16 +658,26 @@ apinex → gemini → openrouter-qwen → openrouter-laguna
   * Rotas `/admin`, `/admin/`, `/admin/admin.css` e `/admin/admin.js` servidas com headers estritos: `Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; frame-ancestors 'none'`, `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`.
   * Bloqueio rigoroso de path traversal (`/admin/../server.js`, encoding traversal, barras duplas) retornando `404` estrito.
   * Preservação total do proxy `/v1`, switcher e endpoints existentes.
-- **Funcionalidades da UI:**
-  * Visão geral de roteamento: cartões de modo ativo (AUTO/MANUAL), provider manual, limite de contexto e contadores.
-  * Ações rápidas de modo: alternar para MANUAL selecionando o provider ou retornar para AUTO.
-  * Lista de provedores com badges de status (online/cooldown), contadores de requests/sucessos/falhas e origem da chave (`armazenada localmente`, `env` ou `ausente` com últimos 4 caracteres).
-  * Teste de conexão ativo por provider (executa ping upstream e exibe status e latência em ms).
-  * Reordenação dinâmica de fallback (botões ↑ e ↓ com persistência imediata).
-  * Modal para criação de novos provedores e exclusão com confirmação nativa.
-  * Botão de recarga de configuração em memória.
 - **Testes da UI (`test/admin-ui.test.js`):**
   * 17 testes automatizados cobrindo entrega estática, headers de segurança, bloqueio de caminhos proibidos, análise estática de conformidade (ausência de `innerHTML`, `eval`, CDNs ou scripts externos), regressão de `/v1` e ciclo funcional completo da interface simulado com mock upstream.
+
+**Implementado na Etapa 3 (Abas Horizontais, Grid Responsivo e Modo CUSTOM):**
+
+- **Reorganização em abas horizontais:** a tela `/admin` foi estruturada em 3 abas sem recarregar página:
+  * **Aba 1 (Providers):** grid responsivo em 2+ colunas exibindo cartões de todos os provedores com badges de status, contadores e botão ativo para teste de conexão.
+  * **Aba 2 (Roteamento):** separação visual estrita entre **Provider Principal (AUTO)** e **Ordem de Contingência (Fallback)**; seletor dos 3 modos operacionais (`AUTO`, `CUSTOM - Fallback Manual` e `MANUAL`); card explicativo da regra ativa com botão dinâmico para salvar.
+  * **Aba 3 (Ordem de Fallback):** controle visual da sequência de contingência com reordenação interativa (botões ↑ e ↓) e modal para cadastro de novos provedores.
+  * A aba ativa é lembrada automaticamente entre recargas de tela via `sessionStorage`.
+- **Nova regra de negócio: Modo CUSTOM (Fallback Manual):**
+  * Suporte em `router.js` (`reason: CUSTOM_ORDER`): as chamadas partem estritamente do primeiro item de `fallbackOrder`, ignorando cálculos de contexto e limites de tokens.
+  * `PUT /admin/api/mode` aceita `"custom"`.
+  * `switcher-helper.js` valida e grava `"custom"` no `routing-state.json`.
+  * Teste unitário automatizado adicionado em `test/generic-providers.test.js`, validando que requisições acima e abaixo do threshold mantêm a ordem da lista sem desviar para o largeContextProvider.
+- **Ciclo de vida e reinicialização:**
+  * Edições no `config.json` via `/admin/api` são recarregadas a quente na memória.
+  * Trocas de modo (`auto`, `custom`, `manual`) são refletidas imediatamente na próxima requisição sem reiniciar o processo.
+  * Alterações no código-fonte Node.js (`server.js`, `router.js`, etc.) continuam exigindo reinicialização do processo (`Ctrl+C` e `node server.js`).
+- **Total de testes da suíte:** 100 testes automatizados passando sem falhas via `node --test`.
 
 ---
 
@@ -662,12 +696,19 @@ apinex → gemini → openrouter-qwen → openrouter-laguna
 
 # 22. Conclusão
 
-O ClaudeZen evoluiu de um bridge de upstream único para uma camada de abstração de providers com dois modos (`AUTO` e `MANUAL`), fallback em cadeia, cooldown, **streaming em tempo real** e **observabilidade por requisição** que separa claramente a estimativa local do uso real informado pelo provedor.
+O ClaudeZen evoluiu de um bridge de upstream único para uma camada completa e robusta de abstração e roteamento de IA com três modos operacionais (`AUTO`, `CUSTOM` e `MANUAL`), fallback em cadeia, cooldown, **streaming em tempo real**, **observabilidade por requisição** e interface web administrativa `/admin` organizada em abas horizontais com grid responsivo e segurança estrita contra DNS rebinding, CSRF e XSS.
 
-A revisão do `router.js` corrigiu falhas de contabilização (categoria System, soma das partes, `extractUsage`, latência média) e o comportamento de streaming. Em medição real, a estimativa ficou 1,2% abaixo do input informado pelo upstream.
+A revisão da arquitetura permitiu desacoplar claramente as responsabilidades:
+- O `router.js` decide o provider e gerencia métricas/cooldown;
+- O `server.js` faz proxy, conversão de protocolo e serve a interface administrativa;
+- O `validate-config.js` protege contra configurações inválidas na inicialização e na API;
+- O `secrets-store.js` mantém credenciais sensíveis isoladas do código e versionamento.
 
 ```text
-Claude Code → ClaudeZen → Request Router → APInex | Gemini | OpenRouter
+Claude Code → ClaudeZen Proxy → Request Router → APInex | Gemini | OpenRouter
+                 │ (127.0.0.1:8787)
+                 ├── /admin (Painel Web em Abas)
+                 └── /admin/api (API Administrativa Local)
 ```
 
-**Estado final:** operacional e validado com provedores reais para AUTO, MANUAL e uso real; fallback, cooldown e streaming validados em ambiente simulado. O próximo passo recomendado é um teste com falha real de provedor.
+**Estado final:** 100 testes automatizados (`node --test`) passando com 100% de sucesso. Operacional e validado com provedores reais para AUTO, MANUAL e uso real; fallback, cooldown, modo CUSTOM e streaming validados em ambiente simulado.
