@@ -101,9 +101,20 @@ Guia passo a passo completo (template, exemplo, erros comuns e checklist) no REA
 C:\AI_config\ClaudeZen\
 ├── server.js
 ├── router.js
+├── secrets-store.js
+├── validate-config.js
 ├── config.json
 ├── switcher.bat
 ├── routing-state.json
+├── admin/
+│   ├── index.html
+│   ├── admin.css
+│   └── admin.js
+├── test/
+│   ├── server.test.js
+│   ├── generic-providers.test.js
+│   ├── admin-api.test.js
+│   └── admin-ui.test.js
 ├── server.backup.js
 └── config.backup.json
 ```
@@ -389,12 +400,19 @@ As chaves ficam em variáveis de ambiente (`APINEX_API_KEY`, `GEMINI_API_KEY`, `
 
 **Novo modelo de armazenamento (Etapa 1).** Além das variáveis de ambiente, as chaves podem ser guardadas localmente em `%USERPROFILE%\.claudezen\secrets.json` (fora do repositório), criado com permissões restritas ao usuário (`0600` quando o Windows permite). A ordem de resolução da chave, por provider, é: (1) chave guardada no `secrets.json` pelo ID do provider; (2) variável de ambiente indicada por `apiKeyEnv`; (3) se nenhuma existir, erro `API key environment variable <NOME> is missing.` O banner indica a origem da chave por provider (`armazenada localmente`, `variável de ambiente <NOME>` ou `ausente`), sem nunca exibir a chave completa — no máximo os 4 últimos caracteres (`...ABCD`). O `secrets.json` **não é criptografado** e fica protegido apenas pelas permissões do perfil do usuário.
 
-**Proteções do painel administrativo (`/admin/api`):**
+**Proteções do painel administrativo (`/admin/api` e interface `/admin`):**
 - Token administrativo aleatório por inicialização (`crypto.randomBytes(32)`), exibido no banner; comparação em tempo constante (`crypto.timingSafeEqual`).
 - Validação do header `Host` (apenas `127.0.0.1:<porta>` ou `localhost:<porta>`) contra DNS rebinding.
 - Validação do header `Origin` em métodos que alteram estado (POST/PUT/PATCH/DELETE) contra CSRF.
 - Corpo limitado a 64 KB; sem CORS aberto; erros em português com status HTTP coerentes.
-- Nenhuma chave é retornada em resposta HTTP, logada ou commitada.
+- Nenhuma chave é retornada em resposta HTTP, logada ou commitada (apenas `keySource` e `keyLast4`).
+- **Segurança da interface web `/admin`:**
+  * Headers HTTP estritos: `Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; frame-ancestors 'none'`, `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`.
+  * Bloqueio total a scripts e estilos inline, CDNs, bibliotecas remotas e fontes externas.
+  * Manipulação segura do DOM: uso estrito de `createElement` e `textContent`, com proibição de `innerHTML`, `outerHTML`, `document.write` ou `eval`.
+  * Campo de chave com `type="password"`, `autocomplete="off"` e limpeza imediata da memória/DOM após envio.
+  * Token capturado na URL de inicialização, guardado exclusivamente em `sessionStorage` e limpo da barra de endereços com `history.replaceState`.
+  * Polling não agressivo (5s) desativado automaticamente quando a aba do navegador fica inativa ou oculta (`visibilitychange`).
 
 ---
 
@@ -475,9 +493,15 @@ O `router.js` foi auditado com testes sobre payloads simulados. A fórmula centr
 | API administrativa: recarga a quente mantém cooldown por ID  | Upstream simulado  | ✅           |
 | API administrativa: backup criado e limitado a 10            | Upstream simulado  | ✅           |
 | API administrativa: teste de conexão com upstream 200 e 503  | Upstream simulado  | ✅           |
+| Interface `/admin`: entrega estática (HTML, CSS, JS) com 200 | Upstream simulado  | ✅           |
+| Interface `/admin`: headers de segurança (CSP, no-store, nosniff, no-referrer) | Upstream simulado | ✅ |
+| Interface `/admin`: proteção de caminhos proibidos e traversal (404) | Upstream simulado | ✅  |
+| Interface `/admin`: análise estática (zero innerHTML/eval/CDNs/scripts inline) | Local | ✅        |
+| Interface `/admin`: ciclo completo da UI via API (mock upstream, test, order, mode, delete) | Upstream simulado | ✅ |
+| Suíte de testes automatizados (`node --test`): 99 testes     | Local              | ✅ (99 pass, 0 fail) |
 | **Fallback com falha real de provedor (429/5xx reais)**       | Provider real      | ⏳ **pendente** |
 
-**Nota de rigor:** os cenários de fallback, cooldown, validação e streaming foram validados com upstreams HTTP locais simulados que reproduzem 503 e respostas SSE, comprovando a lógica do ClaudeZen — inclusive a configuração genérica com dois providers do OpenRouter (Qwen e Laguna). Eles não substituem um teste com falha real de um provedor (por exemplo, esgotar a quota do APInex e observar a transição para o Gemini).
+**Nota de rigor:** os cenários de fallback, cooldown, validação, streaming, API administrativa e interface visual `/admin` foram validados com upstreams HTTP locais simulados e análise estática automatizada, comprovando a robustez e segurança do ClaudeZen. Total de 99 testes automatizados cobrindo o projeto. Eles não substituem um teste com falha real de um provedor (por exemplo, esgotar a quota do APInex e observar a transição para o Gemini).
 
 ---
 
@@ -584,24 +608,42 @@ apinex → gemini → openrouter-qwen → openrouter-laguna
 | ---- | --------- |
 | Teste com falha real de provedor | O fallback foi validado com upstream simulado. Falta validar com 429/5xx reais (veja a seção 17). |
 | Separar plataforma de provider | Proposta descrita na seção 20.1 (`platforms` + `providers`), ainda não implementada. |
-| Evoluções de resiliência e observabilidade | Circuit breaker, health checks ativos, `Retry-After`, dashboard e métricas persistentes (veja a seção 21). |
-| **Interface visual `/admin` (Etapa 2)** | A API administrativa (`/admin/api`) está concluída (Etapa 1). Falta a página visual que consuma essas rotas. |
+| Evoluções de resiliência e observabilidade | Circuit breaker, health checks ativos, `Retry-After` e métricas persistentes (veja a seção 21). |
 
 ---
 
-## 20.3 API administrativa e armazenamento local de chaves — **Etapa 1 concluída**
+## 20.3 API administrativa, armazenamento de chaves e tela visual `/admin` — **Etapas 1 e 2 concluídas**
 
-**Motivação.** Permitir gerenciar providers, chaves, ordem de fallback e modo AUTO/MANUAL sem editar o `config.json` manualmente nem reiniciar o servidor.
+**Motivação.** Permitir gerenciar providers, chaves, ordem de fallback e modo AUTO/MANUAL sem editar o `config.json` manualmente nem reiniciar o servidor, oferecendo tanto uma API REST local quanto uma interface web visual completa e segura.
 
-**Implementado:**
+**Implementado na Etapa 1 (Backend & API):**
 
 - **`secrets-store.js`:** armazena chaves em `%USERPROFILE%\.claudezen\secrets.json` (fora do repositório), com escrita atômica e permissões restritas. A chave guardada tem prioridade sobre a variável de ambiente.
 - **API administrativa `/admin/api`:** CRUD de providers, gestão de chaves, reordenação do `fallbackOrder`, definição de `normalProvider`/`largeContextProvider`, alternância AUTO/MANUAL, teste de conexão e recarga. Toda alteração valida com `validate-config.js` antes de gravar; gravação atômica com backup em `.claudezen-backups/` (máx. 10).
-- **Segurança:** token aleatório por inicialização (comparação em tempo constante), validação de `Host` (DNS rebinding) e `Origin` (CSRF), corpo limitado a 64 KB, sem CORS aberto.
+- **Segurança da API:** token aleatório por inicialização (comparação em tempo constante), validação de `Host` (DNS rebinding) e `Origin` (CSRF), corpo limitado a 64 KB, sem CORS aberto.
 - **Recarga a quente:** `reloadConfig()` troca a configuração atomicamente; cooldown preservado por ID de provider.
-- **Testes:** 29 testes em `test/admin-api.test.js` (segurança, CRUD, validação, chaves, fallback, routing, mode, delete, cooldown, backups, conexão upstream 200/503).
+- **Testes da API:** 29 testes em `test/admin-api.test.js` (segurança, CRUD, validação, chaves, fallback, routing, mode, delete, cooldown, backups, conexão upstream 200/503).
 
-**Pendente (Etapa 2):** a interface visual (`/admin`) que consuma a API administrativa.
+**Implementado na Etapa 2 (Interface Visual `/admin`):**
+
+- **Arquivos criados na pasta `admin/`:**
+  * `admin/index.html`: layout semântico, acessível e responsivo, sem scripts ou estilos inline, com ícones SVG embutidos.
+  * `admin/admin.css`: tema adaptativo claro/escuro (`prefers-color-scheme`), tipografia moderna do sistema, feedback visual de status, botões de ação e modal.
+  * `admin/admin.js`: lógica client-side pura (zero npm, zero CDNs), manipulação segura do DOM exclusivamente via `createElement` e `textContent` (zero `innerHTML`), persistência do token em `sessionStorage` e polling de status (5s) pausado quando a aba está oculta (`visibilitychange`).
+- **Entrega estática e segurança em `server.js`:**
+  * Rotas `/admin`, `/admin/`, `/admin/admin.css` e `/admin/admin.js` servidas com headers estritos: `Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; frame-ancestors 'none'`, `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`.
+  * Bloqueio rigoroso de path traversal (`/admin/../server.js`, encoding traversal, barras duplas) retornando `404` estrito.
+  * Preservação total do proxy `/v1`, switcher e endpoints existentes.
+- **Funcionalidades da UI:**
+  * Visão geral de roteamento: cartões de modo ativo (AUTO/MANUAL), provider manual, limite de contexto e contadores.
+  * Ações rápidas de modo: alternar para MANUAL selecionando o provider ou retornar para AUTO.
+  * Lista de provedores com badges de status (online/cooldown), contadores de requests/sucessos/falhas e origem da chave (`armazenada localmente`, `env` ou `ausente` com últimos 4 caracteres).
+  * Teste de conexão ativo por provider (executa ping upstream e exibe status e latência em ms).
+  * Reordenação dinâmica de fallback (botões ↑ e ↓ com persistência imediata).
+  * Modal para criação de novos provedores e exclusão com confirmação nativa.
+  * Botão de recarga de configuração em memória.
+- **Testes da UI (`test/admin-ui.test.js`):**
+  * 17 testes automatizados cobrindo entrega estática, headers de segurança, bloqueio de caminhos proibidos, análise estática de conformidade (ausência de `innerHTML`, `eval`, CDNs ou scripts externos), regressão de `/v1` e ciclo funcional completo da interface simulado com mock upstream.
 
 ---
 
@@ -613,8 +655,7 @@ apinex → gemini → openrouter-qwen → openrouter-laguna
 | Rate-limit awareness      | Respeitar `Retry-After` e `X-RateLimit-Remaining`.                                          |
 | Controle de quota         | Tokens usados/restantes por provider, usando o usage real já capturado.                     |
 | Pesos por provider        | Distribuição proporcional em vez de ordem fixa.                                             |
-| Health checks ativos      | Sondagem periódica dos providers.                                                           |
-| Dashboard web             | Painel com estado, requests e uso por provider.                                             |
+| Health checks ativos      | Sondagem periódica dos providers em segundo plano.                                          |
 | Métricas persistentes     | Histórico de requests e consumo entre reinicializações.                                     |
 
 ---

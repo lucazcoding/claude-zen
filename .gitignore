@@ -10,3 +10,4 @@ routing-state.json.tmp
 node_modules/
 .env
 .env.*
+.vscode/

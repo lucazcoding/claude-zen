@@ -145,7 +145,7 @@ Cada provider pode ter headers customizados opcionais via o campo `headers` (obj
 
 ### Passo a passo
 
-> **Alternativa (Etapa 1 concluída):** providers podem ser criados e gerenciados pela [API administrativa](#api-administrativa) (`POST /admin/api/providers`), sem editar o `config.json` manualmente e sem reiniciar. A interface visual (tela `/admin`) chegará na Etapa 2.
+> **Alternativa recomendada (Tela visual `/admin`):** providers podem ser criados, testados e gerenciados visualmente direto na interface web em `http://127.0.0.1:8787/admin`, ou via [API administrativa](#api-administrativa) (`POST /admin/api/providers`), sem editar o `config.json` manualmente e sem reiniciar o servidor.
 
 1. **Escolha um ID único** para o provider. O ID é uma chave do objeto `providers` no `config.json` — não há validação de caracteres ou maiúsculas/minúsculas no código, mas use a [convenção de nomes](#convenção-de-nomes) abaixo.
 2. **Adicione a entrada** em `providers` no `config.json` usando o [template](#template) abaixo.
@@ -634,13 +634,33 @@ Invoke-RestMethod http://127.0.0.1:8787/router/status
 
 ---
 
-# API administrativa
+# Painel Administrativo e API Local
 
-O ClaudeZen expõe uma API administrativa local em `/admin/api` (mesmo servidor do proxy, `127.0.0.1:8787`). Ela permite gerenciar providers, chaves, ordem de fallback, modo AUTO/MANUAL e recarregar a configuração **sem reiniciar o servidor**.
+O ClaudeZen oferece um **painel visual administrativo** em `/admin` e uma **API administrativa local** em `/admin/api` (no mesmo servidor do proxy, `127.0.0.1:8787`). Eles permitem gerenciar providers, chaves, ordem de fallback, alternar o modo AUTO/MANUAL, testar conexões e recarregar a configuração **sem reiniciar o servidor**.
 
-> **Etapa 1 (backend) concluída.** A interface visual (`/admin`) será entregue na Etapa 2. Por enquanto, use as rotas abaixo via `curl`/PowerShell.
+## Interface Visual (`/admin`)
 
-## Segurança
+- **Como acessar:** ao iniciar o servidor, o link pronto com o token de sessão é exibido no banner do terminal:
+  ```text
+  Admin : http://127.0.0.1:8787/admin?token=<TOKEN>
+  ```
+  Abra no seu navegador. O token é capturado da URL, salvo em `sessionStorage` e o parâmetro `?token=` é limpo da barra de endereços para não ficar exposto no histórico.
+- **Autenticação manual:** se acessar diretamente `http://127.0.0.1:8787/admin`, um campo permite colar o token exibido no banner do console.
+- **Recursos da tela:**
+  * **Status & Roteador:** visualização em tempo real do modo ativo (AUTO/MANUAL), provedor manual, thresholds de contexto e contadores.
+  * **Alternância de modo:** botões rápidos para mudar entre AUTO e MANUAL (selecionando o provider desejado).
+  * **Lista de Providers:** cartões com ID, nome, modelo, endpoint, origem da chave (`armazenada localmente`, `env` ou `ausente` com últimos 4 dígitos) e contadores de requests/sucessos/falhas.
+  * **Teste de Conexão:** botão **Testar conexão** em cada provider que executa uma chamada de ping upstream em tempo real, informando latência em milissegundos e status retornado.
+  * **Reordenação de Fallback:** botões **↑** e **↓** para reorganizar a ordem de contingência instantaneamente.
+  * **Adicionar Provider:** modal com formulário para cadastrar novos providers (ID, nome, baseUrl, model, timeout, headers e chave opcional).
+  * **Excluir Provider:** remoção direta com confirmação nativa.
+  * **Recarregar Configuração:** botão para recarregar o `config.json` em memória a qualquer momento.
+  * **Zero dependências externas:** HTML/CSS/JS puros, ícones SVG inline, tema claro/escuro automático do sistema, sem fontes remotas ou bibliotecas de terceiros.
+- **Segurança da UI:** a chave de API nunca é exposta (campo `password`, limpo após envio); proibições estritas de `innerHTML` (manipulação segura do DOM via `createElement`/`textContent`); headers de segurança rígidos (`Content-Security-Policy: default-src 'self'`, `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`).
+
+## API administrativa
+
+Além da interface visual, todas as operações podem ser realizadas diretamente via chamadas HTTP (ex.: via `curl` ou scripts):
 
 - **Token administrativo:** gerado aleatoriamente a cada inicialização (`crypto.randomBytes(32)`). É exibido no banner de inicialização, junto com a URL `http://127.0.0.1:8787/admin?token=<TOKEN>`. Pode ser fixado via variável de ambiente `CLAUDEZEN_ADMIN_TOKEN`.
 - **Header obrigatório:** toda rota `/admin/api` exige `X-Admin-Token: <TOKEN>`. A comparação é feita em tempo constante (`crypto.timingSafeEqual`). Token ausente ou errado → `401`.
@@ -854,12 +874,13 @@ node server.js
 [x] Menu do switcher gerado a partir do config.json
 [x] Limpeza de resquícios do projeto original
 [x] Testes automatizados (`node --test`)
+[x] API administrativa local (`/admin/api`) e armazenamento seguro de chaves
+[x] Dashboard web / tela de configuração local (`/admin`)
 [ ] Circuit breaker completo
 [ ] Health checks ativos
 [ ] Retry-After
 [ ] Rate-limit headers
 [ ] Controle de quota
-[ ] Dashboard web
 [ ] Métricas persistentes
 [ ] Histórico de requests
 [ ] Pesos por provider
