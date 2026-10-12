@@ -387,6 +387,15 @@ Observação: com streaming em tempo real e requisições paralelas do Claude Co
 
 As chaves ficam em variáveis de ambiente (`APINEX_API_KEY`, `GEMINI_API_KEY`, `CLAUDEZEN_OPENROUTER_QWEN_API_KEY`, `CLAUDEZEN_OPENROUTER_LAGUNA_API_KEY`); o `config.json` contém apenas `"apiKeyEnv": "APINEX_API_KEY"`. A variável `OPENROUTER_API_KEY` deixou de ser usada (o OpenRouter agora tem duas chaves independentes). Isso reduz o risco de commit acidental, exposição no Git, compartilhamento do arquivo e vazamento em logs. O banner de inicialização avisa quando alguma chave não está definida.
 
+**Novo modelo de armazenamento (Etapa 1).** Além das variáveis de ambiente, as chaves podem ser guardadas localmente em `%USERPROFILE%\.claudezen\secrets.json` (fora do repositório), criado com permissões restritas ao usuário (`0600` quando o Windows permite). A ordem de resolução da chave, por provider, é: (1) chave guardada no `secrets.json` pelo ID do provider; (2) variável de ambiente indicada por `apiKeyEnv`; (3) se nenhuma existir, erro `API key environment variable <NOME> is missing.` O banner indica a origem da chave por provider (`armazenada localmente`, `variável de ambiente <NOME>` ou `ausente`), sem nunca exibir a chave completa — no máximo os 4 últimos caracteres (`...ABCD`). O `secrets.json` **não é criptografado** e fica protegido apenas pelas permissões do perfil do usuário.
+
+**Proteções do painel administrativo (`/admin/api`):**
+- Token administrativo aleatório por inicialização (`crypto.randomBytes(32)`), exibido no banner; comparação em tempo constante (`crypto.timingSafeEqual`).
+- Validação do header `Host` (apenas `127.0.0.1:<porta>` ou `localhost:<porta>`) contra DNS rebinding.
+- Validação do header `Origin` em métodos que alteram estado (POST/PUT/PATCH/DELETE) contra CSRF.
+- Corpo limitado a 64 KB; sem CORS aberto; erros em português com status HTTP coerentes.
+- Nenhuma chave é retornada em resposta HTTP, logada ou commitada.
+
 ---
 
 # 14. Configuração do Claude Code
@@ -456,6 +465,16 @@ O `router.js` foi auditado com testes sobre payloads simulados. A fórmula centr
 | Derivação do `fallbackOrder` quando ausente                   | Upstream simulado  | ✅           |
 | Erro 400 do cliente gera box de erro sem fallback             | Upstream simulado  | ✅           |
 | Banner com chave ausente; encerramento com resumo             | Local              | ✅           |
+| API administrativa: token ausente/errado (401)               | Upstream simulado  | ✅           |
+| API administrativa: Host inválido (403) / Origin divergente (403) | Upstream simulado | ✅           |
+| API administrativa: CRUD de providers, fallback, routing, mode | Upstream simulado | ✅           |
+| API administrativa: config inválido não grava (422)          | Upstream simulado  | ✅           |
+| API administrativa: chave nunca vaza em resposta nem log     | Upstream simulado  | ✅           |
+| API administrativa: chave guardada tem prioridade sobre env  | Upstream simulado  | ✅           |
+| API administrativa: deletar provider em uso retorna 409      | Upstream simulado  | ✅           |
+| API administrativa: recarga a quente mantém cooldown por ID  | Upstream simulado  | ✅           |
+| API administrativa: backup criado e limitado a 10            | Upstream simulado  | ✅           |
+| API administrativa: teste de conexão com upstream 200 e 503  | Upstream simulado  | ✅           |
 | **Fallback com falha real de provedor (429/5xx reais)**       | Provider real      | ⏳ **pendente** |
 
 **Nota de rigor:** os cenários de fallback, cooldown, validação e streaming foram validados com upstreams HTTP locais simulados que reproduzem 503 e respostas SSE, comprovando a lógica do ClaudeZen — inclusive a configuração genérica com dois providers do OpenRouter (Qwen e Laguna). Eles não substituem um teste com falha real de um provedor (por exemplo, esgotar a quota do APInex e observar a transição para o Gemini).
@@ -566,6 +585,23 @@ apinex → gemini → openrouter-qwen → openrouter-laguna
 | Teste com falha real de provedor | O fallback foi validado com upstream simulado. Falta validar com 429/5xx reais (veja a seção 17). |
 | Separar plataforma de provider | Proposta descrita na seção 20.1 (`platforms` + `providers`), ainda não implementada. |
 | Evoluções de resiliência e observabilidade | Circuit breaker, health checks ativos, `Retry-After`, dashboard e métricas persistentes (veja a seção 21). |
+| **Interface visual `/admin` (Etapa 2)** | A API administrativa (`/admin/api`) está concluída (Etapa 1). Falta a página visual que consuma essas rotas. |
+
+---
+
+## 20.3 API administrativa e armazenamento local de chaves — **Etapa 1 concluída**
+
+**Motivação.** Permitir gerenciar providers, chaves, ordem de fallback e modo AUTO/MANUAL sem editar o `config.json` manualmente nem reiniciar o servidor.
+
+**Implementado:**
+
+- **`secrets-store.js`:** armazena chaves em `%USERPROFILE%\.claudezen\secrets.json` (fora do repositório), com escrita atômica e permissões restritas. A chave guardada tem prioridade sobre a variável de ambiente.
+- **API administrativa `/admin/api`:** CRUD de providers, gestão de chaves, reordenação do `fallbackOrder`, definição de `normalProvider`/`largeContextProvider`, alternância AUTO/MANUAL, teste de conexão e recarga. Toda alteração valida com `validate-config.js` antes de gravar; gravação atômica com backup em `.claudezen-backups/` (máx. 10).
+- **Segurança:** token aleatório por inicialização (comparação em tempo constante), validação de `Host` (DNS rebinding) e `Origin` (CSRF), corpo limitado a 64 KB, sem CORS aberto.
+- **Recarga a quente:** `reloadConfig()` troca a configuração atomicamente; cooldown preservado por ID de provider.
+- **Testes:** 29 testes em `test/admin-api.test.js` (segurança, CRUD, validação, chaves, fallback, routing, mode, delete, cooldown, backups, conexão upstream 200/503).
+
+**Pendente (Etapa 2):** a interface visual (`/admin`) que consuma a API administrativa.
 
 ---
 

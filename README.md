@@ -145,15 +145,17 @@ Cada provider pode ter headers customizados opcionais via o campo `headers` (obj
 
 ### Passo a passo
 
+> **Alternativa (Etapa 1 concluída):** providers podem ser criados e gerenciados pela [API administrativa](#api-administrativa) (`POST /admin/api/providers`), sem editar o `config.json` manualmente e sem reiniciar. A interface visual (tela `/admin`) chegará na Etapa 2.
+
 1. **Escolha um ID único** para o provider. O ID é uma chave do objeto `providers` no `config.json` — não há validação de caracteres ou maiúsculas/minúsculas no código, mas use a [convenção de nomes](#convenção-de-nomes) abaixo.
 2. **Adicione a entrada** em `providers` no `config.json` usando o [template](#template) abaixo.
 3. **Adicione o ID ao `fallbackOrder`** na posição desejada. Se o provider não estiver no `fallbackOrder`, ele só poderá ser usado em modo **MANUAL** (e aparecerá um aviso na inicialização).
-4. **Crie a variável de ambiente** da chave:
+4. **Crie a variável de ambiente** da chave, ou guarde-a pela API (`PUT /admin/api/key/:id`):
    ```powershell
    setx CLAUDEZEN_ID_DO_PROVIDER_API_KEY "SUA_CHAVE"
    ```
    Feche e abra um terminal novo para que a variável seja carregada.
-5. **Reinicie o ClaudeZen.** O `config.json` é carregado uma única vez na inicialização, então qualquer alteração exige reinício. Confira o banner: o provider deve aparecer com `●` (chave detectada) ou `○` (chave ausente).
+5. **Reinicie o ClaudeZen** (se editou o `config.json` manualmente) ou recarregue via `POST /admin/api/reload`. Confira o banner: o provider deve aparecer com `●` (chave detectada) ou `○` (chave ausente).
 6. **Abra o `switcher.bat`.** O menu é gerado dinamicamente a partir do `config.json` (via `switcher-helper.js`), então o novo provider aparece automaticamente, sem alteração de código.
 7. **Teste em modo MANUAL** selecionando o novo provider no menu e confirme em `/router/status` que ele foi usado.
 
@@ -632,10 +634,90 @@ Invoke-RestMethod http://127.0.0.1:8787/router/status
 
 ---
 
+# API administrativa
+
+O ClaudeZen expõe uma API administrativa local em `/admin/api` (mesmo servidor do proxy, `127.0.0.1:8787`). Ela permite gerenciar providers, chaves, ordem de fallback, modo AUTO/MANUAL e recarregar a configuração **sem reiniciar o servidor**.
+
+> **Etapa 1 (backend) concluída.** A interface visual (`/admin`) será entregue na Etapa 2. Por enquanto, use as rotas abaixo via `curl`/PowerShell.
+
+## Segurança
+
+- **Token administrativo:** gerado aleatoriamente a cada inicialização (`crypto.randomBytes(32)`). É exibido no banner de inicialização, junto com a URL `http://127.0.0.1:8787/admin?token=<TOKEN>`. Pode ser fixado via variável de ambiente `CLAUDEZEN_ADMIN_TOKEN`.
+- **Header obrigatório:** toda rota `/admin/api` exige `X-Admin-Token: <TOKEN>`. A comparação é feita em tempo constante (`crypto.timingSafeEqual`). Token ausente ou errado → `401`.
+- **Proteção contra DNS rebinding:** o header `Host` deve ser `127.0.0.1:<porta>` ou `localhost:<porta>`. Qualquer outro → `403`.
+- **Proteção CSRF:** em métodos que alteram estado (POST/PUT/PATCH/DELETE), se houver header `Origin`, ele deve coincidir com a origem do próprio servidor (`http://127.0.0.1:<porta>` ou `http://localhost:<porta>`). Diferente → `403`.
+- **Sem CORS aberto.** Corpo limitado a **64 KB**.
+
+## Armazenamento de chaves
+
+As chaves de API podem ser guardadas localmente em `%USERPROFILE%\.claudezen\secrets.json` (fora do repositório), em vez de (ou em adição a) variáveis de ambiente.
+
+**Ordem de resolução da chave** (para cada provider):
+
+1. Chave guardada no `secrets.json` (pelo ID do provider).
+2. Variável de ambiente indicada por `apiKeyEnv`.
+3. Se nenhuma existir, erro `API key environment variable <NOME> is missing.`
+
+O banner de inicialização indica a **origem** da chave por provider: `armazenada localmente`, `variável de ambiente <NOME>` ou `ausente`. Nunca é exibida a chave completa — no máximo os 4 últimos caracteres (`...ABCD`).
+
+> ⚠️ O `secrets.json` **não é criptografado**. Ele fica protegido apenas pelas permissões do perfil do usuário no Windows (modo `0600` quando possível). **Nunca copie este arquivo para o repositório** — ele já está no `.gitignore`.
+
+## Rotas
+
+| Método | Rota | Descrição |
+| ------ | ---- | --------- |
+| `GET` | `/admin/api/state` | Estado completo: providers (sem chave, apenas `hasKey`, `keySource`, `keyLast4`), `fallbackOrder`, `normalProvider`, `largeContextProvider`, modo atual e provider manual, status/cooldown de cada provider. |
+| `POST` | `/admin/api/providers` | Cria provider. Campos: `id`, `name`, `baseUrl`, `model`, `timeoutMs` (opcional), `headers` (opcional), `apiKey` (opcional). `409` se o ID já existir. O ID é adicionado ao fim do `fallbackOrder`. `apiKeyEnv` é gerado automaticamente como `CLAUDEZEN_<ID_MAIUSCULO>_API_KEY`. |
+| `PUT` | `/admin/api/providers/:id` | Edita campos (o `id` é imutável). A chave só é alterada se `apiKey` vier preenchida; vazia/ausente mantém a atual. |
+| `DELETE` | `/admin/api/providers/:id` | Remove provider. `409` se for `normalProvider`, `largeContextProvider` ou o provider manual ativo. Caso contrário, remove do config, do `fallbackOrder` e a chave do `secrets.json`. |
+| `PUT` | `/admin/api/key/:id` | Grava/atualiza apenas a chave do provider. |
+| `DELETE` | `/admin/api/key/:id` | Remove a chave guardada (volta a valer a variável de ambiente, se existir). |
+| `PUT` | `/admin/api/order` | Recebe a nova lista do `fallbackOrder` (IDs existentes, sem duplicados). |
+| `PUT` | `/admin/api/routing` | Atualiza `normalProvider`, `largeContextProvider` e `largeContextThreshold`. |
+| `PUT` | `/admin/api/mode` | `{ "mode": "auto" \| "manual", "provider"? }`. Reutiliza o mecanismo do `routing-state.json`/`switcher-helper`. |
+| `POST` | `/admin/api/providers/:id/test` | Faz uma requisição mínima de chat completions (max_tokens=1, timeout 20s) e retorna `{ ok, status, latencyMs, message }` sem vazar a chave nem o corpo da resposta. |
+| `POST` | `/admin/api/reload` | Recarrega o `config.json` + validação. |
+
+Toda alteração no config segue este fluxo:
+
+1. Monta o novo config em memória.
+2. Valida com `validate-config.js`; se inválido, responde `422` com as mensagens e **não grava**.
+3. Faz backup do `config.json` anterior em `.claudezen-backups/` (máx. 10, apagando os mais antigos).
+4. Grava de forma atômica (arquivo temporário + rename).
+5. Recarrega a quente.
+
+A **recarga a quente** (`reloadConfig`) troca a configuração em uso de forma atômica: requisições em andamento terminam com a config antiga; novas usam a nova. O estado de **cooldown é preservado por ID** de provider (providers removidos têm o estado descartado).
+
+## Exemplos (PowerShell)
+
+```powershell
+$token = "<TOKEN do banner>"
+$h = @{ "X-Admin-Token" = $token; "Content-Type" = "application/json" }
+
+# Estado
+Invoke-RestMethod http://127.0.0.1:8787/admin/api/state -Headers $h
+
+# Criar provider
+$body = @{ id="meuprovider"; name="Meu Provider"; baseUrl="https://api.exemplo.com/v1"; model="meu-modelo"; apiKey="sk-xxx" } | ConvertTo-Json
+Invoke-RestMethod http://127.0.0.1:8787/admin/api/providers -Method POST -Headers $h -Body $body
+
+# Testar conexão
+Invoke-RestMethod http://127.0.0.1:8787/admin/api/providers/meuprovider/test -Method POST -Headers $h
+
+# Alternar modo
+Invoke-RestMethod http://127.0.0.1:8787/admin/api/mode -Method PUT -Headers $h -Body '{"mode":"manual","provider":"meuprovider"}'
+
+# Recarregar
+Invoke-RestMethod http://127.0.0.1:8787/admin/api/reload -Method POST -Headers $h
+```
+
+---
+
 # Segurança
 
 * Não armazene API keys no `config.json`.
 * Não faça commit de `.env` nem de arquivos com `sk-...` / `AIza...`.
+* O arquivo `secrets.json` (chaves guardadas localmente) fica em `%USERPROFILE%\.claudezen\`, fora do repositório.
 
 ```gitignore
 routing-state.json
@@ -643,6 +725,8 @@ routing-state.json
 *.backup.json
 .env
 .env.*
+.claudezen-backups/
+secrets.json
 ```
 
 ---
@@ -668,7 +752,8 @@ Get-Content C:\AI_config\ClaudeZen\routing-state.json
 | Alteração                  | Reiniciar?                                       |
 | -------------------------- | ------------------------------------------------ |
 | `switcher.bat`             | Não. Vale na próxima requisição.                 |
-| `config.json`              | Sim.                                             |
+| `config.json` (edição manual) | Sim.                                          |
+| `config.json` via API administrativa (`/admin/api`) | Não. Alteração vale imediatamente (recarga a quente). |
 | `router.js` / `server.js`  | Sim (Ctrl+C e `node server.js`).                 |
 
 ---
