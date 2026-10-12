@@ -4,6 +4,7 @@
 *.backup.json
 .claude/
 .claudezen/
+.claudezen-backups/
 routing-state.json
 routing-state.json.tmp
 node_modules/

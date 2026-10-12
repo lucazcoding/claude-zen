@@ -798,7 +798,14 @@ function createSessionStats() {
  * ============================================================
  */
 
-function createRouter(config) {
+function createRouter(config, deps) {
+  const options = deps || {};
+
+  const secrets =
+    options.secrets && typeof options.secrets.get === "function"
+      ? options.secrets
+      : null;
+
   const routing =
     config.routing || {};
 
@@ -901,7 +908,9 @@ function createRouter(config) {
   }
 
   const stats =
-    new Map();
+    options.stats instanceof Map
+      ? options.stats
+      : new Map();
 
   const session =
     createSessionStats();
@@ -911,20 +920,22 @@ function createRouter(config) {
       providers
     )
   ) {
-    stats.set(
-      id,
-      {
-        requests: 0,
-        successes: 0,
-        failures: 0,
+    if (!stats.has(id)) {
+      stats.set(
+        id,
+        {
+          requests: 0,
+          successes: 0,
+          failures: 0,
 
-        lastStatus: null,
-        lastError: null,
-        lastUsedAt: null,
+          lastStatus: null,
+          lastError: null,
+          lastUsedAt: null,
 
-        cooldownUntil: 0
-      }
-    );
+          cooldownUntil: 0
+        }
+      );
+    }
   }
 
 
@@ -1152,9 +1163,18 @@ function createRouter(config) {
    * ==========================================================
    */
 
-  function getApiKey(provider) {
+  function getApiKey(provider, providerId) {
     const envName =
       provider.apiKeyEnv;
+
+    if (secrets && providerId) {
+      const stored =
+        secrets.get(providerId);
+
+      if (stored) {
+        return stored;
+      }
+    }
 
     const key =
       envName
@@ -1180,6 +1200,50 @@ function createRouter(config) {
     }
 
     return key;
+  }
+
+
+  function getKeyInfo(provider, providerId) {
+    const envName =
+      provider.apiKeyEnv;
+
+    if (secrets && providerId) {
+      const stored =
+        secrets.get(providerId);
+
+      if (stored) {
+        return {
+          hasKey: true,
+          keySource: "stored",
+          keyLast4:
+            stored.length >= 4
+              ? stored.slice(-4)
+              : null
+        };
+      }
+    }
+
+    const envKey =
+      envName
+        ? process.env[envName]
+        : "";
+
+    if (envKey) {
+      return {
+        hasKey: true,
+        keySource: "env",
+        keyLast4:
+          envKey.length >= 4
+            ? envKey.slice(-4)
+            : null
+      };
+    }
+
+    return {
+      hasKey: false,
+      keySource: "missing",
+      keyLast4: null
+    };
   }
 
 
@@ -1281,7 +1345,7 @@ function createRouter(config) {
     }
 
     const apiKey =
-      getApiKey(provider);
+      getApiKey(provider, id);
 
     const timeoutMs =
       Number(
@@ -2314,6 +2378,154 @@ function createRouter(config) {
 
 
   /* ==========================================================
+   * TESTE DE CONEXÃO
+   * ==========================================================
+   */
+
+  async function testProvider(id) {
+    const provider =
+      providers[id];
+
+    if (!provider) {
+      return {
+        ok: false,
+        status: 0,
+        latencyMs: 0,
+        message:
+          "Provider não encontrado: " + id
+      };
+    }
+
+    const startedAt =
+      Date.now();
+
+    try {
+      const apiKey =
+        getApiKey(provider, id);
+
+      const timeoutMs =
+        Math.min(
+          Number(
+            provider.timeoutMs ||
+            config.upstreamTimeoutMs ||
+            600000
+          ),
+          20000
+        );
+
+      const controller =
+        new AbortController();
+
+      const timer =
+        setTimeout(
+          () => controller.abort(),
+          timeoutMs
+        );
+
+      try {
+        const response =
+          await fetch(
+            normalizeBaseUrl(
+              provider.baseUrl
+            ) + "/chat/completions",
+            {
+              method: "POST",
+
+              headers: {
+                authorization:
+                  "Bearer " + apiKey,
+
+                "content-type":
+                  "application/json",
+
+                ...(provider.headers || {})
+              },
+
+              signal: controller.signal,
+
+              body: JSON.stringify({
+                model: provider.model,
+                messages: [
+                  {
+                    role: "user",
+                    content: "ping"
+                  }
+                ],
+                max_tokens: 1,
+                stream: false
+              })
+            }
+          );
+
+        const latencyMs =
+          Date.now() - startedAt;
+
+        if (response.ok) {
+          return {
+            ok: true,
+            status: response.status,
+            latencyMs,
+            message:
+              "Conexão OK (" +
+              response.status +
+              ")"
+          };
+        }
+
+        let detail =
+          response.status +
+          " " +
+          response.statusText;
+
+        try {
+          const text =
+            await response.text();
+
+          if (text && text.length < 300) {
+            detail += " — " + text;
+          }
+        } catch {
+          /* ignore */
+        }
+
+        return {
+          ok: false,
+          status: response.status,
+          latencyMs,
+          message: detail
+        };
+      } finally {
+        clearTimeout(timer);
+      }
+    } catch (error) {
+      const latencyMs =
+        Date.now() - startedAt;
+
+      const message =
+        error && error.name === "AbortError"
+          ? "Timeout após " +
+            Math.round(latencyMs) +
+            "ms"
+          : error && error.message
+            ? error.message
+            : String(error);
+
+      return {
+        ok: false,
+        status: 0,
+        latencyMs,
+        message
+      };
+    }
+  }
+
+
+  function getStats() {
+    return stats;
+  }
+
+
+  /* ==========================================================
    * API PÚBLICA
    * ==========================================================
    */
@@ -2331,7 +2543,11 @@ function createRouter(config) {
 
     getModeState,
 
-    getSessionStats
+    getSessionStats,
+
+    testProvider,
+
+    getStats
   };
 }
 
