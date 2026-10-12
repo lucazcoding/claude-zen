@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>ClaudeZen — Configurações</title>
+  <link rel="stylesheet" href="/admin/admin.css">
+</head>
+<body>
+  <header class="app-header">
+    <svg class="app-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path fill="currentColor" d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.488.488 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z"/>
+    </svg>
+    <h1>ClaudeZen — Configurações</h1>
+  </header>
+
+  <main>
+    <section id="token-warning" class="card warning hidden" role="alert">
+      <p><strong>Token ausente ou expirado.</strong> O token muda a cada reinício do ClaudeZen; abra a URL mostrada no banner de inicialização.</p>
+    </section>
+
+    <section id="app" class="hidden">
+      <nav class="nav-tabs" role="tablist" aria-label="Seções de configuração">
+        <button type="button" class="tab-btn active" role="tab" aria-selected="true" data-tab="tab-providers" id="tab-btn-providers">Providers</button>
+        <button type="button" class="tab-btn" role="tab" aria-selected="false" data-tab="tab-routing" id="tab-btn-routing">Roteamento</button>
+        <button type="button" class="tab-btn" role="tab" aria-selected="false" data-tab="tab-order" id="tab-btn-order">Ordem de Fallback</button>
+      </nav>
+
+      <div id="tab-providers" class="tab-pane active" role="tabpanel" aria-labelledby="tab-btn-providers">
+        <section class="card">
+          <div class="card-header">
+            <div>
+              <h2>Providers configurados</h2>
+              <p class="muted">Gerencie modelos, endpoints e chaves de API com segurança.</p>
+            </div>
+            <button type="button" id="new-provider" class="primary">+ Novo provider</button>
+          </div>
+          <div id="providers-list" class="providers"></div>
+        </section>
+      </div>
+
+      <div id="tab-routing" class="tab-pane" role="tabpanel" aria-labelledby="tab-btn-routing">
+        <div class="grid-2col">
+          <section class="card">
+            <h2>Modo de roteamento</h2>
+            <div class="field">
+              <label for="mode">Modo operacional</label>
+              <select id="mode">
+                <option value="auto">AUTO (fallback inteligente)</option>
+                <option value="manual">MANUAL (provider fixo)</option>
+              </select>
+            </div>
+            <div class="field" id="manual-provider-field">
+              <label for="manual-provider">Provider fixo (modo manual)</label>
+              <select id="manual-provider"></select>
+            </div>
+            <button type="button" id="save-mode" class="primary">Salvar modo</button>
+          </section>
+
+          <section class="card">
+            <h2>Roteamento automático</h2>
+            <div class="field">
+              <label for="normal-provider">Provider padrão (contexto normal)</label>
+              <select id="normal-provider"></select>
+            </div>
+            <div class="field">
+              <label for="large-provider">Provider para contexto grande</label>
+              <select id="large-provider"></select>
+            </div>
+            <div class="field">
+              <label for="large-threshold">Limite de tokens para contexto grande</label>
+              <input type="number" id="large-threshold" min="1" placeholder="Ex: 50000">
+            </div>
+            <button type="button" id="save-routing" class="primary">Salvar roteamento</button>
+          </section>
+        </div>
+      </div>
+
+      <div id="tab-order" class="tab-pane" role="tabpanel" aria-labelledby="tab-btn-order">
+        <section class="card">
+          <h2>Ordem de prioridade do fallback</h2>
+          <p class="muted">Arraste os cards para reordenar ou use as setas. Clique em "Salvar ordem" para aplicar em tempo real.</p>
+          <ul id="order-list" class="order-list" aria-label="Ordem de fallback"></ul>
+          <button type="button" id="save-order" class="primary">Salvar ordem</button>
+        </section>
+      </div>
+    </section>
+  </main>
+
+  <div id="modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 id="modal-title">Novo provider</h2>
+        <button type="button" id="modal-close" aria-label="Fechar">✕</button>
+      </div>
+      <form id="provider-form">
+        <div class="field">
+          <label for="f-id">ID</label>
+          <input type="text" id="f-id" autocomplete="off" spellcheck="false">
+          <span class="hint">Convenção: plataforma-modelo (minúsculas com hífen). Só na criação.</span>
+        </div>
+        <div class="field">
+          <label for="f-name">Nome</label>
+          <input type="text" id="f-name" autocomplete="off" spellcheck="false">
+        </div>
+        <div class="field">
+          <label for="f-baseurl">Base URL</label>
+          <input type="url" id="f-baseurl" autocomplete="off" spellcheck="false" placeholder="https://api.exemplo.com/v1">
+        </div>
+        <div class="field">
+          <label for="f-model">Modelo</label>
+          <input type="text" id="f-model" autocomplete="off" spellcheck="false">
+        </div>
+        <div class="field">
+          <label for="f-timeout">Timeout (ms, opcional)</label>
+          <input type="number" id="f-timeout" min="1" autocomplete="off">
+        </div>
+        <fieldset class="field">
+          <legend>Headers</legend>
+          <div id="headers-list"></div>
+          <button type="button" id="add-header" class="secondary">+ Header</button>
+          <span class="hint warn">NÃO coloque chaves de API em headers: o config.json pode ser versionado no Git. Use o campo de chave.</span>
+        </fieldset>
+        <div class="field">
+          <label for="f-key">Chave de API</label>
+          <input type="password" id="f-key" autocomplete="off" spellcheck="false">
+          <span class="hint" id="f-key-hint">Deixe em branco para manter a chave atual (na edição).</span>
+        </div>
+        <div class="form-actions">
+          <button type="button" id="remove-key" class="secondary">Remover chave guardada</button>
+          <button type="button" id="save-test" class="secondary">Salvar e testar</button>
+          <button type="submit" class="primary">Salvar</button>
+        </div>
+        <p class="hint">Só provedores com API compatível com Chat Completions da OpenAI funcionam hoje.</p>
+      </form>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+
+  <script src="/admin/admin.js"></script>
+</body>
+</html>

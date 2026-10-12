@@ -447,6 +447,22 @@ const ADMIN_TOKEN =
 const ADMIN_BODY_LIMIT_BYTES =
   64 * 1024;
 
+const ADMIN_STATIC_FILES = {
+  "/admin": "index.html",
+  "/admin/": "index.html",
+  "/admin/admin.css": "admin.css",
+  "/admin/admin.js": "admin.js",
+};
+
+const ADMIN_STATIC_TYPES = {
+  "index.html": "text/html; charset=utf-8",
+  "admin.css": "text/css; charset=utf-8",
+  "admin.js": "text/javascript; charset=utf-8",
+};
+
+const ADMIN_STATIC_CSP =
+  "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none';";
+
 function safeCompare(a, b) {
   const bufA =
     Buffer.from(String(a || ""));
@@ -4694,24 +4710,16 @@ async function handleAdminApi(req, res, url) {
   const method = req.method;
   const pathname = url.pathname;
 
-  if (pathname === "/admin") {
-    const token =
-      req.headers["x-admin-token"] ||
-      url.searchParams.get("token");
+  const staticFile =
+    ADMIN_STATIC_FILES[pathname];
 
-    if (!token || !safeCompare(token, ADMIN_TOKEN)) {
-      res.writeHead(401, {
-        "content-type":
-          "text/html; charset=utf-8",
-      });
-
-      res.end(
-        "<h1>401 — Token administrativo ausente ou inválido.</h1>",
-      );
-      return;
-    }
-
-    if (!isAllowedHost(req.headers.host)) {
+  if (method === "GET" && staticFile) {
+    if (
+      !isAllowedHost(
+        req.headers.host,
+        req.socket && req.socket.localPort,
+      )
+    ) {
       res.writeHead(403, {
         "content-type":
           "text/html; charset=utf-8",
@@ -4723,23 +4731,58 @@ async function handleAdminApi(req, res, url) {
       return;
     }
 
+    const adminDir = path.join(
+      __dirname,
+      "admin",
+    );
+
+    const filePath = path.join(
+      adminDir,
+      staticFile,
+    );
+
+    const resolved = path.resolve(filePath);
+
+    if (
+      resolved !==
+        path.join(adminDir, staticFile)
+    ) {
+      res.writeHead(404, {
+        "content-type":
+          "text/html; charset=utf-8",
+      });
+      res.end("<h1>404</h1>");
+      return;
+    }
+
+    let content;
+    try {
+      content = fs.readFileSync(
+        resolved,
+        "utf8",
+      );
+    } catch {
+      res.writeHead(404, {
+        "content-type":
+          "text/html; charset=utf-8",
+      });
+      res.end(
+        "<h1>404 — Arquivo não encontrado.</h1>",
+      );
+      return;
+    }
+
     res.writeHead(200, {
       "content-type":
-        "text/html; charset=utf-8",
+        ADMIN_STATIC_TYPES[staticFile],
       "cache-control": "no-store",
+      "content-security-policy":
+        ADMIN_STATIC_CSP,
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "no-referrer",
     });
 
-    res.end(`<!doctype html>
-<html><head><meta charset="utf-8">
-<title>ClaudeZen — Admin</title></head>
-<body>
-<h1>ClaudeZen — Painel administrativo</h1>
-<p>A interface visual (etapa 2) ainda não foi implementada.</p>
-<p>Use a API em <code>/admin/api</code> com o header <code>X-Admin-Token</code>.</p>
-<p>Token atual:</p>
-<pre>${ADMIN_TOKEN}</pre>
-</body></html>`);
-
+    res.end(content);
     return;
   }
 
@@ -5473,7 +5516,10 @@ function createServer() {
              --------------------------------------------- */
 
           if (
-            url.pathname === "/admin" ||
+            Object.prototype.hasOwnProperty.call(
+              ADMIN_STATIC_FILES,
+              url.pathname,
+            ) ||
             url.pathname.startsWith(
               "/admin/api/",
             )
