@@ -1029,6 +1029,13 @@ function createRouter(config, deps) {
       };
     }
 
+    if (mode === "custom") {
+      return {
+        mode: "custom",
+        provider: null
+      };
+    }
+
     return {
       mode: "auto",
       provider: null
@@ -1117,6 +1124,30 @@ function createRouter(config, deps) {
 
         selected:
           modeState.provider
+      };
+    }
+
+    if (
+      modeState.mode ===
+      "custom"
+    ) {
+      const ordered = [
+        ...fallbackOrder
+      ];
+
+      const selected =
+        ordered[0] || null;
+
+      return {
+        ordered,
+
+        mode:
+          "custom",
+
+        reason:
+          "CUSTOM_ORDER",
+
+        selected
       };
     }
 

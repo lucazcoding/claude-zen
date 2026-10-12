@@ -729,3 +729,68 @@ test("dois providers com o mesmo baseUrl enviam cada um o seu model", async () =
     await openRouter.close();
   }
 });
+
+test("modo CUSTOM segue estritamente a ordem de fallbackOrder ignorando regras de contexto", async () => {
+  const p1 = await jsonUpstream(200, { choices: [{ message: { content: "ok-p1" } }] });
+  const p2 = await jsonUpstream(200, { choices: [{ message: { content: "ok-p2" } }] });
+
+  const tmpState = path.join(
+    os.tmpdir(),
+    `claudezen-custom-state-${Date.now()}-${Math.random().toString(16).slice(2)}.json`,
+  );
+
+  const config = baseConfig(
+    {
+      p1: basicProvider("p1", "Provider 1", p1.url, "m1", "KP1"),
+      p2: basicProvider("p2", "Provider 2", p2.url, "m2", "KP2"),
+    },
+    {
+      mode: "custom",
+      normalProvider: "p2", // no AUTO seria p2, mas no CUSTOM deve ser p1
+      fallbackOrder: ["p1", "p2"],
+    },
+    tmpState,
+  );
+
+  try {
+    process.env.KP1 = "k1";
+    process.env.KP2 = "k2";
+
+    const router = createRouter(config);
+
+    const res = await router.call(
+      {},
+      { messages: [{ role: "user", content: "oi" }] },
+    );
+
+    // Deve chamar p1 por ser o primeiro da fallbackOrder
+    assert.equal(res.providerId, "p1");
+    assert.equal(res.routeReason, "CUSTOM_ORDER");
+    assert.equal(p1.requests.length, 1);
+    assert.equal(p2.requests.length, 0);
+
+    // Se mudarmos o fallbackOrder, o primeiro muda imediatamente
+    const router2 = createRouter({
+      ...config,
+      routing: {
+        ...config.routing,
+        fallbackOrder: ["p2", "p1"],
+      },
+    });
+
+    const res2 = await router2.call(
+      {},
+      { messages: [{ role: "user", content: "oi" }] },
+    );
+
+    assert.equal(res2.providerId, "p2");
+    assert.equal(res2.routeReason, "CUSTOM_ORDER");
+    assert.equal(p2.requests.length, 1);
+  } finally {
+    process.env.KP1 = "";
+    process.env.KP2 = "";
+    try { fs.unlinkSync(tmpState); } catch {}
+    await p1.close();
+    await p2.close();
+  }
+});

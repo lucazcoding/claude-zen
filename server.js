@@ -5208,11 +5208,11 @@ async function handleAdminApi(req, res, url) {
       const body = await readAdminJsonBody(req);
       const mode = String(body.mode || "").toLowerCase();
 
-      if (mode !== "auto" && mode !== "manual") {
+      if (mode !== "auto" && mode !== "manual" && mode !== "custom") {
         sendAdminError(
           res,
           400,
-          "'mode' deve ser 'auto' ou 'manual'.",
+          "'mode' deve ser 'auto', 'manual' ou 'custom'.",
         );
         return;
       }

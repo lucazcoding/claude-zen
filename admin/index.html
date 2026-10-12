@@ -47,9 +47,11 @@
             <div class="field">
               <label for="mode">Modo operacional</label>
               <select id="mode">
-                <option value="auto">AUTO (fallback inteligente)</option>
+                <option value="auto">AUTO (por tamanho de contexto)</option>
+                <option value="custom">CUSTOM (ordem direta da lista de fallback)</option>
                 <option value="manual">MANUAL (provider fixo)</option>
               </select>
+              <span class="hint" id="mode-hint">No modo CUSTOM, o ClaudeZen chama estritamente o 1º provider da sua lista de fallback (sem regras de tokens). Se falhar, tenta o 2º, depois o 3º.</span>
             </div>
             <div class="field" id="manual-provider-field">
               <label for="manual-provider">Provider fixo (modo manual)</label>
@@ -59,18 +61,19 @@
           </section>
 
           <section class="card">
-            <h2>Roteamento automático</h2>
+            <h2>Roteamento automático (Quem inicia a chamada)</h2>
             <div class="field">
-              <label for="normal-provider">Provider padrão (contexto normal)</label>
+              <label for="normal-provider">Provider principal (contexto normal &lt; limite)</label>
               <select id="normal-provider"></select>
+              <span class="hint">Este provider é SEMPRE chamado em primeiro lugar no modo AUTO (a menos que esteja em cooldown).</span>
             </div>
             <div class="field">
-              <label for="large-provider">Provider para contexto grande</label>
+              <label for="large-provider">Provider para contexto grande (&ge; limite)</label>
               <select id="large-provider"></select>
             </div>
             <div class="field">
               <label for="large-threshold">Limite de tokens para contexto grande</label>
-              <input type="number" id="large-threshold" min="1" placeholder="Ex: 50000">
+              <input type="number" id="large-threshold" min="1" placeholder="Ex: 100000">
             </div>
             <button type="button" id="save-routing" class="primary">Salvar roteamento</button>
           </section>
@@ -79,8 +82,8 @@
 
       <div id="tab-order" class="tab-pane" role="tabpanel" aria-labelledby="tab-btn-order">
         <section class="card">
-          <h2>Ordem de prioridade do fallback</h2>
-          <p class="muted">Arraste os cards para reordenar ou use as setas. Clique em "Salvar ordem" para aplicar em tempo real.</p>
+          <h2>Ordem de contingência (Fallback)</h2>
+          <p class="muted">Define a sequência de reserva caso o provider principal falhe (429, 5xx ou timeout). O provider chamado primeiro em requisições normais é o <strong>Provider principal</strong> configurado na aba Roteamento.</p>
           <ul id="order-list" class="order-list" aria-label="Ordem de fallback"></ul>
           <button type="button" id="save-order" class="primary">Salvar ordem</button>
         </section>
