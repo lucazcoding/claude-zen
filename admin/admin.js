@@ -6,6 +6,7 @@
   var token = null;
   var pollTimer = null;
   var dragSrcId = null;
+  var testStates = {};
 
   function $(sel) {
     return document.querySelector(sel);
@@ -205,8 +206,24 @@
     return opts;
   }
 
+  function updateModeHint(val) {
+    var hint = $("#mode-hint");
+    if (!hint) return;
+    if (val === "custom") {
+      hint.textContent =
+        "No modo CUSTOM, o ClaudeZen chama estritamente o 1º provider da sua lista de fallback (sem regras de tokens). Se falhar, tenta o 2º, depois o 3º. Respeita cooldown.";
+    } else if (val === "manual") {
+      hint.textContent =
+        "No modo MANUAL, o ClaudeZen força a chamada ao provider fixo selecionado abaixo, ignorando qualquer cooldown ativo.";
+    } else {
+      hint.textContent =
+        "No modo AUTO, requisições com menos de 100k tokens vão para o Provider Principal, e acima disso para o Provider de Contexto Grande. Respeita cooldown.";
+    }
+  }
+
   function renderRouting() {
     $("#mode").value = state.mode || "auto";
+    updateModeHint(state.mode || "auto");
     var manual = $("#manual-provider");
     clearChildren(manual);
     providerOptions(state.manualProvider || "").forEach(function (o) {
@@ -373,15 +390,21 @@
         openForm(id);
       });
 
+      var tState = testStates[id];
+      var isTesting = tState && tState.loading;
+
       var testBtn = el("button", {
         type: "button",
         class: "secondary",
+        disabled: isTesting ? "" : null,
         "aria-label": "Testar conexão de " + p.name,
       });
       testBtn.appendChild(svgIcon(ICONS.test));
-      testBtn.appendChild(document.createTextNode(" Testar"));
+      testBtn.appendChild(
+        document.createTextNode(isTesting ? " Testando…" : " Testar"),
+      );
       testBtn.addEventListener("click", function () {
-        testConnection(id, card);
+        testConnection(id);
       });
 
       var delBtn = el("button", {
@@ -399,6 +422,34 @@
       actions.appendChild(testBtn);
       actions.appendChild(delBtn);
       card.appendChild(actions);
+
+      if (tState) {
+        var boxClass =
+          "test-result " +
+          (tState.loading ? "testing" : tState.ok ? "ok" : "fail");
+        var box = el("div", { class: boxClass });
+        if (tState.loading) {
+          box.textContent = "⏳ Testando conexão com o upstream…";
+        } else {
+          var parts = [];
+          if (tState.ok) {
+            parts.push("✓ Upstream Conectado (HTTP " + tState.status + ")");
+          } else {
+            parts.push(
+              "✗ Falha no Upstream" +
+                (tState.status ? " (HTTP " + tState.status + ")" : ""),
+            );
+          }
+          if (tState.latencyMs != null) {
+            parts.push(tState.latencyMs + " ms");
+          }
+          if (tState.message) {
+            parts.push(tState.message);
+          }
+          box.textContent = parts.join(" • ");
+        }
+        card.appendChild(box);
+      }
 
       container.appendChild(card);
     });
@@ -430,7 +481,7 @@
     $("#remove-key").style.display = id && p && p.keySource === "stored" ? "" : "none";
 
     $("#modal").classList.remove("hidden");
-    $("#f-name").focus();
+    (id ? $("#f-name") : $("#f-id")).focus();
   }
 
   function closeForm() {
@@ -525,6 +576,9 @@
     }
 
     var body = { name: name || id, baseUrl: baseUrl, model: model };
+    if (!editingId) {
+      body.id = id;
+    }
     if (timeoutRaw) body.timeoutMs = Number(timeoutRaw);
     if (headers) body.headers = headers;
     if (key) body.apiKey = key;
@@ -541,13 +595,13 @@
           toast(errorMessage(r.body), "error");
           return;
         }
+        var targetId = editingId || id;
         toast("Provider salvo com sucesso.", "success");
         closeForm();
         return loadState().then(function () {
           renderAll();
           if (andTest) {
-            var pid = editingId || id;
-            testConnection(pid);
+            testConnection(targetId);
           }
         });
       })
@@ -581,32 +635,41 @@
       });
   }
 
-  function testConnection(id, card) {
-    var target = card || $("#providers-list");
-    var existing = target.querySelector(".test-result");
-    if (existing) existing.remove();
-    var box = el("div", { class: "test-result", text: "testando…" });
-    target.appendChild(box);
+  function testConnection(id) {
+    if (testStates[id] && testStates[id].loading) return;
+    testStates[id] = { loading: true };
+    renderProviders();
 
     api("/providers/" + encodeURIComponent(id) + "/test", { method: "POST" })
       .then(function (r) {
         if (r.status >= 400) {
-          box.className = "test-result fail";
-          box.textContent = "falhou: " + errorMessage(r.body);
+          testStates[id] = {
+            loading: false,
+            ok: false,
+            status: r.status,
+            message: errorMessage(r.body),
+          };
+          renderProviders();
           return;
         }
         var b = r.body || {};
-        box.className = b.ok ? "test-result ok" : "test-result fail";
-        var parts = [];
-        parts.push(b.ok ? "ok" : "falhou");
-        if (b.status) parts.push("HTTP " + b.status);
-        if (b.latencyMs != null) parts.push(b.latencyMs + " ms");
-        if (b.message) parts.push(b.message);
-        box.textContent = parts.join(" • ");
+        testStates[id] = {
+          loading: false,
+          ok: !!b.ok,
+          status: b.status,
+          latencyMs: b.latencyMs,
+          message: b.message || (b.ok ? "Conexão bem-sucedida" : "Upstream indisponível"),
+        };
+        renderProviders();
       })
       .catch(function (e) {
-        box.className = "test-result fail";
-        box.textContent = "erro de rede: " + e.message;
+        testStates[id] = {
+          loading: false,
+          ok: false,
+          status: 0,
+          message: "Erro de rede com o ClaudeZen: " + e.message,
+        };
+        renderProviders();
       });
   }
 
@@ -628,7 +691,8 @@
           toast(errorMessage(r.body), "error");
           return;
         }
-        toast("Provider removido.", "success");
+        delete testStates[id];
+        toast("Provider removido com sucesso.", "success");
         return loadState().then(function () {
           renderAll();
         });
@@ -753,8 +817,10 @@
     initTabs();
 
     $("#mode").addEventListener("change", function () {
+      var val = $("#mode").value;
       $("#manual-provider-field").style.display =
-        $("#mode").value === "manual" ? "" : "none";
+        val === "manual" ? "" : "none";
+      updateModeHint(val);
     });
 
     $("#save-mode").addEventListener("click", saveMode);

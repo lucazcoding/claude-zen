@@ -673,6 +673,10 @@ apinex → gemini → openrouter-qwen → openrouter-laguna
   * `PUT /admin/api/mode` aceita `"custom"`.
   * `switcher-helper.js` valida e grava `"custom"` no `routing-state.json`.
   * Teste unitário automatizado adicionado em `test/generic-providers.test.js`, validando que requisições acima e abaixo do threshold mantêm a ordem da lista sem desviar para o largeContextProvider.
+- **Robustez do CRUD e Teste de Providers:**
+  * Correção no formulário de criação de providers (`admin.js`): garantia de envio do campo `body.id` na requisição `POST /admin/api/providers`.
+  * Persistência de estado de teste (`testStates`): execução de teste do provider é desacoplada do ciclo de polling de 5s, impedindo que requisições lentas de upstream ou timeouts apaguem o feedback na tela ou deixem a interface travada em "testando...".
+  * Logs explícitos no console diferenciando o status HTTP da rota administrativa (200 OK) do retorno real do upstream (ex.: 503, 402, 404).
 - **Ciclo de vida e reinicialização:**
   * Edições no `config.json` via `/admin/api` são recarregadas a quente na memória.
   * Trocas de modo (`auto`, `custom`, `manual`) são refletidas imediatamente na próxima requisição sem reiniciar o processo.

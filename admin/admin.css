@@ -444,14 +444,23 @@ button.icon-btn {
   padding: 10px;
   border-radius: 7px;
   font-size: 0.88rem;
+  word-break: break-word;
+}
+
+.test-result.testing {
+  background: rgba(59, 130, 246, 0.12);
+  border: 1px dashed rgba(59, 130, 246, 0.5);
+  color: var(--accent);
 }
 
 .test-result.ok {
   background: rgba(22, 163, 74, 0.12);
+  border: 1px solid rgba(22, 163, 74, 0.3);
 }
 
 .test-result.fail {
   background: rgba(220, 38, 38, 0.12);
+  border: 1px solid rgba(220, 38, 38, 0.3);
 }
 
 @media (max-width: 520px) {
