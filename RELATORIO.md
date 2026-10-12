@@ -547,15 +547,13 @@ apinex → gemini → openrouter-qwen → openrouter-laguna
 }
 ```
 
-## 20.2 Pontos identificados (pendentes)
+## 20.2 Pontos pendentes
 
 | Item | Descrição |
 | ---- | --------- |
-| Teste com falha real de provedor | Fallback validado em ambiente simulado; falta validar com 429/5xx reais (já listado na seção 17). |
-| Validação da configuração na inicialização | **Implementado** em `validate-config.js` (erros abortam; avisos não). Mantido aqui como referência de comportamento. |
-| Menu dinâmico do `switcher.bat` | **Implementado** via `switcher-helper.js`. Referência mantida. |
-| Limpeza de resquícios do projeto original | **Implementado** (cache renomeado, `DEFAULT_MODELS` removido, `owned_by` neutro). Referência mantida. |
-| Testes automatizados | **Implementado** (`test/generic-providers.test.js`; `node --test`). Referência mantida. |
+| Teste com falha real de provedor | O fallback foi validado com upstream simulado. Falta validar com 429/5xx reais (veja a seção 17). |
+| Separar plataforma de provider | Proposta descrita na seção 20.1 (`platforms` + `providers`), ainda não implementada. |
+| Evoluções de resiliência e observabilidade | Circuit breaker, health checks ativos, `Retry-After`, dashboard e métricas persistentes (veja a seção 21). |
 
 ---
 
