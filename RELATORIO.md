@@ -377,7 +377,7 @@ Neste exemplo, pelos horários do log, o provider levou ~3 s para iniciar a resp
 * **Box de erro** (`CLAUDEZEN REQUEST #n ERROR`): endpoint, status, provider/modelo (se já roteado), duração e mensagem.
 * **Encerramento (Ctrl+C):** salva o cache de reasoning, mostra o resumo da sessão e finaliza.
 * **Logs técnicos do router** (`[CONTEXT]`, `[ROUTE]`, `[PROVIDER]`, `[STATUS]`, `[ROUTER]`): silenciosos por padrão; ativáveis com `CLAUDEZEN_VERBOSE=1` ou `"routing": { "verbose": true }`.
-* **Usage bruto do provider:** `CLAUDE_OPENCODE_LOG_USAGE=1`.
+* **Usage bruto do provider:** `CLAUDE_OPENCODE_LOG_USAGE=1`. O nome é mantido por compatibilidade com a infraestrutura original do projeto.
 
 Observação: com streaming em tempo real e requisições paralelas do Claude Code, blocos de requisições diferentes podem se intercalar no terminal. Por isso o bloco de usage traz o número da requisição (`USAGE — REQUEST #n`).
 

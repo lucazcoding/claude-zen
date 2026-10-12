@@ -553,6 +553,8 @@ Para depurar o `usage` bruto recebido do provider:
 $env:CLAUDE_OPENCODE_LOG_USAGE = "1"
 ```
 
+> O nome `CLAUDE_OPENCODE_LOG_USAGE` é mantido por compatibilidade com a infraestrutura original do projeto.
+
 ---
 
 # Streaming
