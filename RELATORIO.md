@@ -452,25 +452,65 @@ Observação: com streaming em tempo real e requisições paralelas do Claude Co
 
 ---
 
-# 13. Segurança das API Keys
+# 13. Segurança e Configuração das API Keys
 
-As chaves ficam em variáveis de ambiente (`APINEX_API_KEY`, `GEMINI_API_KEY`, `CLAUDEZEN_OPENROUTER_QWEN_API_KEY`, `CLAUDEZEN_OPENROUTER_LAGUNA_API_KEY`); o `config.json` contém apenas `"apiKeyEnv": "APINEX_API_KEY"`. A variável `OPENROUTER_API_KEY` deixou de ser usada (o OpenRouter agora tem duas chaves independentes). Isso reduz o risco de commit acidental, exposição no Git, compartilhamento do arquivo e vazamento em logs. O banner de inicialização avisa quando alguma chave não está definida.
+## 13.1 O problema de design com variáveis de ambiente
 
-**Novo modelo de armazenamento (Etapa 1).** Além das variáveis de ambiente, as chaves podem ser guardadas localmente em `%USERPROFILE%\.claudezen\secrets.json` (fora do repositório), criado com permissões restritas ao usuário (`0600` quando o Windows permite). A ordem de resolução da chave, por provider, é: (1) chave guardada no `secrets.json` pelo ID do provider; (2) variável de ambiente indicada por `apiKeyEnv`; (3) se nenhuma existir, erro `API key environment variable <NOME> is missing.` O banner indica a origem da chave por provider (`armazenada localmente`, `variável de ambiente <NOME>` ou `ausente`), sem nunca exibir a chave completa — no máximo os 4 últimos caracteres (`...ABCD`). O `secrets.json` **não é criptografado** e fica protegido apenas pelas permissões do perfil do usuário.
+O `config.json` versionado define o campo `apiKeyEnv` em cada provider — o nome da variável de ambiente que contém a chave. Isso cria uma dependência implícita: quem clonar o repositório precisa ler o `config.json` para saber quais variáveis definir, pois cada repositório pode usar nomes diferentes (`APINEX_API_KEY`, `MINHA_IA_KEY`, etc.).
 
-**Proteções do painel administrativo (`/admin/api` e interface `/admin`):**
+**A solução é o `secrets.json`**: as chaves são armazenadas por **ID do provider**, totalmente independentes dos nomes de variáveis de ambiente.
+
+## 13.2 Dois caminhos para configurar chaves
+
+| | Painel `/admin` (`secrets.json`) | Variáveis de ambiente |
+|---|---|---|
+| **Local de armazenamento** | `%USERPROFILE%\.claudezen\secrets.json` | Ambiente do sistema operacional |
+| **Requer reiniciar?** | ❌ Não | ❌ Não (recarregado por requisição) |
+| **Requer conhecer `apiKeyEnv`?** | ❌ Não | ✅ Sim |
+| **Funciona ao clonar o projeto?** | ✅ Sim (basta abrir `/admin`) | ⚠️ Depende dos nomes no `config.json` |
+| **Recomendado para** | Uso diário, novos usuários | Servidores, CI/CD, automação |
+
+## 13.3 Ordem de resolução da chave
+
+Para cada provider, o ClaudeZen busca a chave nesta prioridade:
+
+1. **`secrets.json`** — salvo pelo painel `/admin`, indexado por ID do provider
+2. **Variável de ambiente** — nome definido em `apiKeyEnv` no `config.json`
+3. Se nenhum encontrado → erro `API key environment variable <NOME> is missing.`
+
+## 13.4 O `secrets.json`
+
+- Localização: `%USERPROFILE%\.claudezen\secrets.json`
+- Criado automaticamente ao salvar a primeira chave pelo painel
+- Escrita atômica (arquivo temporário + rename) para evitar corrupção
+- Permissões `0600` quando o Windows permite (best effort)
+- **Não é criptografado** — protegido apenas pelas permissões de perfil do Windows
+- Já está no `.gitignore` — nunca commitado
+
+## 13.5 Diagnóstico no banner
+
+O banner de inicialização exibe a origem de cada chave sem jamais expor o valor completo:
+
+```text
+● APInex     → armazenada localmente (...ABCD)
+● Gemini     → variável GEMINI_API_KEY (...WXYZ)
+○ OpenRouter → chave ausente: defina CLAUDEZEN_OPENROUTER_QWEN_API_KEY
+```
+
+Valores retornados pela API administrativa: `keySource` (`"stored"` | `"env"` | `"missing"`) e `keyLast4` (últimos 4 caracteres). A chave completa nunca é retornada em resposta HTTP nem logada.
+
+## 13.6 Proteções do painel administrativo
+
 - Token administrativo aleatório por inicialização (`crypto.randomBytes(32)`), exibido no banner; comparação em tempo constante (`crypto.timingSafeEqual`).
 - Validação do header `Host` (apenas `127.0.0.1:<porta>` ou `localhost:<porta>`) contra DNS rebinding.
 - Validação do header `Origin` em métodos que alteram estado (POST/PUT/PATCH/DELETE) contra CSRF.
 - Corpo limitado a 64 KB; sem CORS aberto; erros em português com status HTTP coerentes.
-- Nenhuma chave é retornada em resposta HTTP, logada ou commitada (apenas `keySource` e `keyLast4`).
 - **Segurança da interface web `/admin`:**
-  * Headers HTTP estritos: `Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; frame-ancestors 'none'`, `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`.
-  * Bloqueio total a scripts e estilos inline, CDNs, bibliotecas remotas e fontes externas.
-  * Manipulação segura do DOM: uso estrito de `createElement` e `textContent`, com proibição de `innerHTML`, `outerHTML`, `document.write` ou `eval`.
-  * Campo de chave com `type="password"`, `autocomplete="off"` e limpeza imediata da memória/DOM após envio.
-  * Token capturado na URL de inicialização, guardado exclusivamente em `sessionStorage` e limpo da barra de endereços com `history.replaceState`.
-  * Polling não agressivo (5s) desativado automaticamente quando a aba do navegador fica inativa ou oculta (`visibilitychange`).
+  * Headers HTTP estritos: `Content-Security-Policy: default-src 'self'`, `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`.
+  * Manipulação segura do DOM: uso estrito de `createElement` e `textContent`; proibição de `innerHTML`, `outerHTML`, `document.write` ou `eval`.
+  * Campo de chave com `type="password"`, `autocomplete="off"` e limpeza imediata após envio.
+  * Token capturado na URL, guardado em `sessionStorage` e limpo da barra de endereços com `history.replaceState`.
+  * Polling de 5s desativado automaticamente quando a aba fica inativa (`visibilitychange`).
 
 ---
 

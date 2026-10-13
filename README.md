@@ -307,7 +307,23 @@ Divisão de responsabilidades: **o router calcula; o server apresenta.** A estim
 
 ## 1. API Keys
 
-As API keys **não** devem ser colocadas no `config.json`. Use variáveis de ambiente do Windows.
+As API keys **não** devem ser colocadas no `config.json`. Existem dois caminhos para configurá-las:
+
+### ✅ Caminho recomendado: painel `/admin` (não requer reiniciar)
+
+Abra `http://127.0.0.1:8787/admin` (o link com token aparece no banner de inicialização) e use o botão **Adicionar Provider** ou edite um provider existente para salvar a chave.
+
+O ClaudeZen armazena a chave em:
+```text
+%USERPROFILE%\.claudezen\secrets.json
+```
+Esse arquivo fica **fora do repositório**, nunca é versionado e é lido automaticamente a cada requisição — sem reiniciar o servidor, sem conhecer nomes de variáveis de ambiente.
+
+> **Por que este caminho é melhor?** O `config.json` que está no repositório define o nome da variável de ambiente de cada provider (`apiKeyEnv`). Cada dono do repositório pode ter escolhido nomes diferentes (ex.: `APINEX_API_KEY`, `MINHA_CHAVE_APINEX`, etc.). Quem clonar o projeto não tem como saber esses nomes sem ler o `config.json`. Usando o painel `/admin`, nada disso importa: a chave é armazenada por **ID do provider** e o sistema a encontra automaticamente.
+
+### Caminho alternativo: variáveis de ambiente do Windows
+
+Se preferir variáveis de ambiente (ex.: em servidores, CI ou automação), use os nomes definidos em `apiKeyEnv` dentro de cada provider no `config.json`. Para a configuração padrão deste repositório:
 
 ```powershell
 setx APINEX_API_KEY "SUA_CHAVE"
@@ -315,6 +331,8 @@ setx GEMINI_API_KEY "SUA_CHAVE"
 setx CLAUDEZEN_OPENROUTER_QWEN_API_KEY "SUA_CHAVE"
 setx CLAUDEZEN_OPENROUTER_LAGUNA_API_KEY "SUA_CHAVE"
 ```
+
+> ⚠️ Se você clonou um repositório de outra pessoa, **abra o `config.json` primeiro** e veja o campo `apiKeyEnv` de cada provider — os nomes das variáveis podem ser diferentes dos listados acima.
 
 Depois abra um **novo** terminal e verifique:
 
@@ -325,11 +343,23 @@ $env:CLAUDEZEN_OPENROUTER_QWEN_API_KEY
 $env:CLAUDEZEN_OPENROUTER_LAGUNA_API_KEY
 ```
 
-> **Nota de migração:** a variável `OPENROUTER_API_KEY` **deixou de ser usada**. O OpenRouter agora tem duas chaves independentes: `CLAUDEZEN_OPENROUTER_QWEN_API_KEY` e `CLAUDEZEN_OPENROUTER_LAGUNA_API_KEY` (ambas podem apontar para a chave da sua conta OpenRouter).
+### Ordem de resolução da chave
 
-> **Atenção:** chaves diferentes da mesma conta OpenRouter podem compartilhar o limite dos modelos gratuitos.
+Para cada provider, o ClaudeZen busca a chave nesta ordem:
 
-Ao iniciar, o ClaudeZen verifica se cada chave existe e mostra `●` (encontrada) ou `○` (ausente, com o nome da variável a definir).
+1. **`secrets.json`** — salvo pelo painel `/admin` (chave por ID do provider)
+2. **Variável de ambiente** — nome em `apiKeyEnv` do `config.json`
+3. Se nenhum encontrado → erro `API key ... is missing`
+
+### Diagnóstico no banner
+
+Ao iniciar, o ClaudeZen mostra a origem de cada chave:
+
+```text
+● APInex     → armazenada localmente (...ABCD)
+● Gemini     → variável GEMINI_API_KEY (...WXYZ)
+○ OpenRouter → chave ausente: defina CLAUDEZEN_OPENROUTER_QWEN_API_KEY
+```
 
 **Nunca faça commit das API keys.**
 
