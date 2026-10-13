@@ -924,6 +924,54 @@ node server.js
 
 **Sim.** O ClaudeZen funciona com qualquer provider de IA que tenha uma API **compatível com OpenAI** — gratuito, freemium ou pago.
 
+## O limite de 100.000 tokens vai travar meu projeto?
+
+**Não.** O `largeContextThreshold` de 100.000 tokens **não bloqueia nem corta nada** — é apenas o limiar de decisão do roteador no modo AUTO:
+
+```text
+Tokens estimados < 100.000   →  usa normalProvider   (ex.: APInex)
+Tokens estimados ≥ 100.000   →  usa largeContextProvider  (ex.: Gemini Flash — 1M de tokens)
+```
+
+Projetos grandes (iFood, Mercado Livre, Shopee — com muitos arquivos abertos, histórico longo, código extenso) vão naturalmente superar 100k tokens por requisição. Nesse caso o router simplesmente envia a requisição ao Gemini, que suporta até **1.000.000 tokens** de contexto.
+
+### Capacidade real dos providers configurados
+
+| Provider | Janela de contexto | Observação |
+|----------|--------------------|------------|
+| Gemini 2.0 Flash (`largeContextProvider`) | **1.000.000 tokens** | Ideal para projetos grandes |
+| APInex / Mimo (`normalProvider`) | ~32k–128k | Para contextos menores e mais rápidos |
+| OpenRouter `:free` | 8k–200k | Depende do modelo escolhido |
+| Claude Haiku (Anthropic pago) | 200.000 tokens | Pay-as-you-go |
+| GPT-4o (OpenAI pago) | 128.000 tokens | Pay-as-you-go |
+
+### Como ajustar o threshold
+
+Via painel `/admin` → aba **Roteamento**, campo **Limiar de tokens**, ou diretamente no `config.json`:
+
+```json
+"routing": {
+  "largeContextThreshold": 200000
+}
+```
+
+Ou pela API sem reiniciar:
+```powershell
+$h = @{ "X-Admin-Token" = "<TOKEN>" ; "Content-Type" = "application/json" }
+Invoke-RestMethod http://127.0.0.1:8787/admin/api/routing -Method PUT -Headers $h `
+  -Body '{"largeContextThreshold": 200000}'
+```
+
+### Modo CUSTOM para projetos grandes
+
+Se quiser **ignorar o cálculo de tokens completamente** e sempre usar o Gemini (ou qualquer sequência que você defina), use o modo CUSTOM com o Gemini no topo do `fallbackOrder`:
+
+```json
+"fallbackOrder": ["gemini", "openrouter-qwen", "apinex"]
+```
+
+Com `mode: custom`, o ClaudeZen sempre tentará o Gemini primeiro, independente do tamanho do contexto.
+
 ## Assinatura de chat vs. acesso por API
 
 | | Assinatura de chat (ex.: Claude Pro, ChatGPT Plus) | Acesso por API (ex.: Anthropic Console, OpenAI, OpenRouter) |

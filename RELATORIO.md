@@ -212,7 +212,7 @@ Ordem de fallback: `APInex → Gemini → OpenRouter`.
 tokens ≈ bytes / 4
 ```
 
-Não reproduz o tokenizer de nenhum modelo. Existe para (a) classificar a requisição como `NORMAL_CONTEXT` ou `LARGE_CONTEXT` e (b) alimentar a observabilidade. O limite de `100.000` é um threshold operacional aproximado.
+Não reproduz o tokenizer de nenhum modelo. Existe para (a) classificar a requisição como `NORMAL_CONTEXT` ou `LARGE_CONTEXT` e (b) alimentar a observabilidade. O limite de `100.000` é um threshold operacional aproximado — **não é um bloqueio nem um corte de contexto**.
 
 ## 7.2 Precisão medida
 
@@ -239,6 +239,40 @@ Na mesma requisição:
 | **Soma**   | **22.194**       |
 
 Observação: no formato OpenAI o system prompt vem dentro de `messages`. O router separa as mensagens de role `system`/`developer` para que a categoria System reflita a realidade. A categoria `Other` é calculada como **resto exato**, de modo que a soma das partes sempre fecha com o total.
+
+## 7.4 Projetos grandes e o threshold de contexto
+
+O `largeContextThreshold` (padrão: 100.000 tokens) **não limita o tamanho do projeto** — é apenas o ponto de decisão de qual provider usar:
+
+```text
+Tokens estimados < threshold   →  normalProvider   (rápido, contexto menor)
+Tokens estimados ≥ threshold   →  largeContextProvider  (maior janela)
+```
+
+Projetos de escala real (plataformas de e-commerce, marketplaces, sistemas com muitos microserviços) geram requisições com facilidade acima de 100k tokens quando o Claude Code lê múltiplos arquivos, acumula histórico longo e usa muitas tools. Nesse cenário, o router automaticamente direciona para o `largeContextProvider`.
+
+### Janela de contexto dos providers
+
+| Provider | Janela de contexto | Posição padrão |
+|----------|--------------------|----------------|
+| Gemini 2.0 Flash | **1.000.000 tokens** | `largeContextProvider` |
+| APInex / Mimo | ~32k–128k | `normalProvider` |
+| OpenRouter `:free` (Qwen, Laguna) | 8k–200k | fallback |
+| Claude Haiku (Anthropic pago) | 200.000 tokens | configurável |
+| GPT-4o (OpenAI pago) | 128.000 tokens | configurável |
+| Groq (Llama 3.3 70B, gratuito) | 128.000 tokens | configurável |
+
+### Como ajustar
+
+Via `/admin/api/routing` (sem reiniciar) ou em `config.json`:
+
+```json
+"routing": {
+  "largeContextThreshold": 200000
+}
+```
+
+Alternativamente, no **modo CUSTOM** o threshold é ignorado por completo: o ClaudeZen segue sempre a ordem do `fallbackOrder`, independente do tamanho do contexto. Ideal quando o projeto é grande o suficiente para que seja mais simples usar sempre o provider de maior janela.
 
 ---
 
