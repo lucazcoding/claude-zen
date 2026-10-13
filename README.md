@@ -920,6 +920,75 @@ node server.js
 
 ---
 
+# Posso usar APIs pagas?
+
+**Sim.** O ClaudeZen funciona com qualquer provider de IA que tenha uma API **compatível com OpenAI** — gratuito, freemium ou pago.
+
+## Assinatura de chat vs. acesso por API
+
+| | Assinatura de chat (ex.: Claude Pro, ChatGPT Plus) | Acesso por API (ex.: Anthropic Console, OpenAI, OpenRouter) |
+|---|---|---|
+| **O que é** | Plano mensal para usar o chat no navegador ou app | Acesso programático — você chama a IA do seu código |
+| **Dá API key?** | ❌ Não | ✅ Sim |
+| **Funciona no ClaudeZen?** | ❌ Não | ✅ Sim |
+
+> Uma assinatura Claude Pro ou ChatGPT Plus **não gera chave de API**. São produtos diferentes, com faturas diferentes.
+
+## O que a plataforma de API te dá
+
+Ao criar uma conta de desenvolvedor e habilitar o acesso por API (geralmente com cartão de crédito, mesmo que o uso seja gratuito), a plataforma fornece:
+
+| Item | Exemplo |
+|------|---------|
+| **API Key** | `sk-ant-...` / `sk-...` / `AIza...` |
+| **Base URL** | `https://api.anthropic.com/v1` |
+| **Nome do modelo** | `claude-opus-4-5` / `gpt-4o` |
+
+Esses três valores são tudo que você precisa para adicionar um provider no ClaudeZen (via painel `/admin` ou `config.json`).
+
+## Plataformas de API mais comuns
+
+| Plataforma | URL base | Modelos gratuitos? | Observação |
+|------------|----------|--------------------|------------|
+| [OpenRouter](https://openrouter.ai) | `https://openrouter.ai/api/v1` | ✅ Vários (sufixo `:free`) | Agrega dezenas de modelos de diferentes provedores |
+| [Google AI Studio](https://aistudio.google.com) | `https://generativelanguage.googleapis.com/v1beta/openai` | ✅ Gemini Flash | Gratuito com limites generosos |
+| [Anthropic Console](https://console.anthropic.com) | `https://api.anthropic.com/v1` | ❌ | Pay-as-you-go; Claude Haiku é o mais barato |
+| [OpenAI](https://platform.openai.com) | `https://api.openai.com/v1` | ❌ | Pay-as-you-go |
+| [Together.ai](https://api.together.xyz) | `https://api.together.xyz/v1` | Créditos iniciais | Open-source models |
+| [Groq](https://console.groq.com) | `https://api.groq.com/openai/v1` | ✅ Limites altos | Inferência ultra-rápida |
+
+> ⚠️ O ClaudeZen **só suporta APIs compatíveis com o formato OpenAI** (`POST /chat/completions`). A API nativa da Anthropic usa um formato diferente — use o OpenRouter ou um adaptador se quiser usar modelos Claude por API.
+
+## Como o contexto é preservado
+
+O **Claude Code** gerencia o contexto da conversa localmente: a cada mensagem, ele envia o **histórico completo** da sessão para o ClaudeZen.
+
+```text
+Mensagem 1 → [msg1]
+Mensagem 2 → [msg1, msg2]
+Mensagem 3 → [msg1, msg2, msg3]
+```
+
+Isso significa que:
+
+- **Troca de provider não perde contexto.** Se o APInex responder a mensagem 1 e o Gemini responder a mensagem 2, o Gemini recebe todo o histórico anterior.
+- **Fallback automático é transparente.** O Claude Code não sabe (nem precisa saber) qual provider respondeu cada mensagem.
+- **Reiniciar o servidor também não perde contexto.** O histórico fica no Claude Code, não no proxy.
+
+## Exemplo: configurar o Claude via API paga (Anthropic Console)
+
+1. Crie conta em [console.anthropic.com](https://console.anthropic.com), adicione método de pagamento e gere uma API key.
+2. No painel `/admin` → aba **Ordem de Fallback** → **Adicionar Provider**:
+   - **ID:** `anthropic-haiku`
+   - **Base URL:** `https://api.anthropic.com/v1`
+   - **Model:** `claude-haiku-4-5`
+   - **API Key:** cole sua chave `sk-ant-...`
+3. Salve. O provider aparece no fallback order e pode ser usado em modo MANUAL ou CUSTOM.
+
+> 💡 Modelos `:free` do OpenRouter são uma ótima forma de começar sem gastar nada, com fallback para modelos pagos quando necessário.
+
+---
+
 # Roadmap
 
 ```text
