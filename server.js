@@ -4877,10 +4877,17 @@ async function handleAdminApi(req, res, url) {
         raw.routing.fallbackOrder.push(id);
       }
 
-      saveConfig(raw);
-
       if (body.apiKey) {
         secretsStore.setSecret(id, String(body.apiKey));
+      }
+
+      try {
+        saveConfig(raw);
+      } catch (err) {
+        if (body.apiKey) {
+          secretsStore.deleteSecret(id);
+        }
+        throw err;
       }
 
       sendAdminJson(res, 201, {
@@ -4930,8 +4937,6 @@ async function handleAdminApi(req, res, url) {
             : body.headers;
       }
 
-      saveConfig(raw);
-
       if (
         body.apiKey !== undefined &&
         body.apiKey !== null &&
@@ -4939,6 +4944,8 @@ async function handleAdminApi(req, res, url) {
       ) {
         secretsStore.setSecret(id, String(body.apiKey));
       }
+
+      saveConfig(raw);
 
       sendAdminJson(res, 200, {
         id,
@@ -5262,6 +5269,17 @@ async function handleAdminApi(req, res, url) {
       }
 
       const result = await ROUTER.testProvider(id);
+
+      const timeStr = new Date().toLocaleTimeString();
+      if (!result.ok) {
+        console.log(
+          `[${timeStr}] ⚠️  [Admin Test] Provider "${id}" falhou no teste com upstream: HTTP ${result.status || 0} (${result.message || "sem detalhes"})`,
+        );
+      } else {
+        console.log(
+          `[${timeStr}] ✓  [Admin Test] Provider "${id}" respondeu com sucesso: HTTP ${result.status} (${result.latencyMs}ms)`,
+        );
+      }
 
       sendAdminJson(res, 200, result);
       return;
