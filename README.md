@@ -10,7 +10,7 @@ http://127.0.0.1:8787
 
 O ClaudeZen decide internamente qual provider e qual modelo serão utilizados.
 
-> **Status do projeto: em desenvolvimento ativo.** A versão atual está operacional (AUTO, MANUAL, CUSTOM, fallback, cooldown, streaming e observabilidade) e já suporta **vários providers por plataforma** (por exemplo, dois modelos do OpenRouter — Qwen e Laguna — como contingências independentes). A configuração genérica, a validação na inicialização, o painel `/admin` com abas horizontais e grid responsivo, o switcher e os testes automatizados (100 testes) foram implementados e validados com upstream simulado. Permanece pendente o teste com **falha real** de um provedor. Detalhes na [seção 20 do relatório técnico](RELATORIO.md#20-pontos-a-melhorar-em-desenvolvimento).
+> **Status do projeto: em desenvolvimento ativo.** A versão atual está operacional (AUTO, MANUAL, CUSTOM, fallback, cooldown, streaming e observabilidade) e já suporta **vários providers por plataforma** (por exemplo, dois modelos do OpenRouter — Qwen e Laguna — como contingências independentes). A configuração genérica, a validação na inicialização, o painel `/admin` com abas horizontais e grid responsivo, o switcher e os testes automatizados (100 testes) cobrem a entrega da API, integridade e segurança (a validação visual do layout no navegador é manual). Permanece pendente o teste com **falha real** de um provedor. Detalhes na [seção 20 do relatório técnico](RELATORIO.md#20-pontos-a-melhorar-em-desenvolvimento).
 
 ---
 
@@ -732,13 +732,13 @@ O ClaudeZen oferece um **painel visual administrativo** em `/admin` e uma **API 
   * **Excluir Provider:** remoção direta com confirmação nativa.
   * **Recarregar Configuração:** botão para recarregar o `config.json` em memória a qualquer momento.
   * **Zero dependências externas:** HTML/CSS/JS puros, ícones SVG inline, tema claro/escuro automático do sistema, sem fontes remotas ou bibliotecas de terceiros.
-- **Segurança da UI:** a chave de API nunca é exposta (campo `password`, limpo após envio); proibições estritas de `innerHTML` (manipulação segura do DOM via `createElement`/`textContent`); headers de segurança rígidos (`Content-Security-Policy: default-src 'self'`, `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`).
+- **Segurança da UI:** a chave de API nunca é exposta (campo `password`, limpo após envio); proibições estritas de `innerHTML` (manipulação segura do DOM via `createElement`/`textContent`); headers de segurança rígidos (`Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none';`, `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`).
 
 ## API administrativa
 
 Além da interface visual, todas as operações podem ser realizadas diretamente via chamadas HTTP (ex.: via `curl` ou scripts):
 
-- **Token administrativo:** gerado aleatoriamente a cada inicialização (`crypto.randomBytes(32)`). É exibido no banner de inicialização, junto com a URL `http://127.0.0.1:8787/admin?token=<TOKEN>`. Pode ser fixado via variável de ambiente `CLAUDEZEN_ADMIN_TOKEN`.
+- **Token administrativo:** gerado aleatoriamente a cada inicialização (`crypto.randomBytes(32)`). É exibido no banner de inicialização, junto com a URL `http://127.0.0.1:8787/admin?token=<TOKEN>`. Pode ser fixado via variável de ambiente `CLAUDEZEN_ADMIN_TOKEN`. Se fixado via `CLAUDEZEN_ADMIN_TOKEN`, o token não muda a cada reinício do servidor e deve ser tratado como segredo.
 - **Header obrigatório:** toda rota `/admin/api` exige `X-Admin-Token: <TOKEN>`. A comparação é feita em tempo constante (`crypto.timingSafeEqual`). Token ausente ou errado → `401`.
 - **Proteção contra DNS rebinding:** o header `Host` deve ser `127.0.0.1:<porta>` ou `localhost:<porta>`. Qualquer outro → `403`.
 - **Proteção CSRF:** em métodos que alteram estado (POST/PUT/PATCH/DELETE), se houver header `Origin`, ele deve coincidir com a origem do próprio servidor (`http://127.0.0.1:<porta>` ou `http://localhost:<porta>`). Diferente → `403`.
@@ -924,7 +924,7 @@ node server.js
 | MANUAL → Gemini                                                | **Provider real**     | ✅        |
 | Retorno para AUTO                                              | **Provider real**     | ✅        |
 | Modo CUSTOM segue estritamente `fallbackOrder` sem tokens      | Upstream simulado     | ✅        |
-| Painel visual `/admin` com abas e segurança (zero dependências)| Upstream simulado/Local| ✅       |
+| Painel visual `/admin`: entrega, segurança e API (zero dependências) | Testes locais/simulado | ✅ (visual manual) |
 | Usage upstream × estimativa                                    | **Provider real**     | ✅ (+1,2%)|
 | Streaming em tempo real                                        | Upstream simulado     | ✅        |
 | Cancelamento do cliente propagado ao upstream                  | Upstream simulado     | ✅        |
@@ -943,6 +943,7 @@ node server.js
 # Limitações
 
 * **Falha no meio do stream:** se um provider já começou a transmitir e cai no meio, o router não consegue transferir a mesma resposta para outro provider. O fallback é confiável antes do início do stream.
+* **Erros 400 e janela de contexto:** erros com status 400 (inclusive quando um upstream rejeita a requisição por estouro da janela de contexto) **não acionam fallback** (apenas status 429 e 5xx acionam). A troca de provider preserva todo o histórico acumulado pelo Claude Code, mas cada provider de destino possui seu próprio limite de contexto. O router não verifica previamente se o destino suporta o tamanho do histórico enviado.
 * **Estimativa de tokens aproximada:** não equivale ao tokenizer do modelo.
 * **Quotas:** o router não conhece o saldo real de cada provider; trabalha com requests, sucessos, falhas e cooldown.
 * **Usage da rota `/v1/chat/completions`:** o corpo é repassado sem leitura, então essa rota não registra usage.
@@ -960,20 +961,20 @@ node server.js
 
 ```text
 Tokens estimados < 100.000   →  usa normalProvider   (ex.: APInex)
-Tokens estimados ≥ 100.000   →  usa largeContextProvider  (ex.: Gemini Flash — 1M de tokens)
+Tokens estimados ≥ 100.000   →  usa largeContextProvider  (ex.: Google Gemini Flash)
 ```
 
-Projetos grandes (iFood, Mercado Livre, Shopee — com muitos arquivos abertos, histórico longo, código extenso) vão naturalmente superar 100k tokens por requisição. Nesse caso o router simplesmente envia a requisição ao Gemini, que suporta até **1.000.000 tokens** de contexto.
+Em projetos com múltiplos arquivos abertos, histórico extenso ou bases de código densas, as requisições podem superar o limiar estabelecido. Nesse caso, o router em modo AUTO direciona a chamada automaticamente ao `largeContextProvider` configurado (como o Google Gemini Flash), evitando erros prematuros de contexto.
 
-### Capacidade real dos providers configurados
+### Capacidade dos providers configurados
 
-| Provider | Janela de contexto | Observação |
-|----------|--------------------|------------|
-| Gemini 2.0 Flash (`largeContextProvider`) | **1.000.000 tokens** | Ideal para projetos grandes |
-| APInex / Mimo (`normalProvider`) | ~32k–128k | Para contextos menores e mais rápidos |
-| OpenRouter `:free` | 8k–200k | Depende do modelo escolhido |
-| Claude Haiku (Anthropic pago) | 200.000 tokens | Pay-as-you-go |
-| GPT-4o (OpenAI pago) | 128.000 tokens | Pay-as-you-go |
+| Provider | Janela de contexto (aproximada; confira no provedor) | Observação |
+|----------|------------------------------------------------------|------------|
+| Google Gemini Flash (`gemini-3.8-flash` ou similar) | Até ~1.000.000 tokens | Ideal para sessões de contexto extenso |
+| APInex / Mimo (`normalProvider`) | ~32k–128k tokens | Para contextos menores e resposta rápida |
+| OpenRouter | Variável (ex.: 8k–200k tokens) | Depende do modelo selecionado |
+| Claude Haiku (via camada OpenAI-compatível) | ~200.000 tokens | Pay-as-you-go |
+| GPT-4o (OpenAI pago) | ~128.000 tokens | Pay-as-you-go |
 
 ### Como ajustar o threshold
 
@@ -994,13 +995,15 @@ Invoke-RestMethod http://127.0.0.1:8787/admin/api/routing -Method PUT -Headers $
 
 ### Modo CUSTOM para projetos grandes
 
-Se quiser **ignorar o cálculo de tokens completamente** e sempre usar o Gemini (ou qualquer sequência que você defina), use o modo CUSTOM com o Gemini no topo do `fallbackOrder`:
+Se quiser **ignorar o cálculo de tokens completamente** e sempre usar uma sequência fixa (por exemplo, tentar Gemini primeiro), use o modo CUSTOM com o provider desejado no topo do `fallbackOrder`:
 
 ```json
 "fallbackOrder": ["gemini", "openrouter-qwen", "apinex"]
 ```
 
-Com `mode: custom`, o ClaudeZen sempre tentará o Gemini primeiro, independente do tamanho do contexto.
+Com `mode: custom`, o ClaudeZen sempre tentará a ordem exata da lista, independentemente da estimativa de tokens.
+
+> ⚠️ **Atenção:** o router não valida a janela de contexto de cada provider de destino. Se um provider intermediário da lista tiver uma janela menor do que o histórico da conversa, o upstream retornará erro 400 (que não aciona fallback). Ordene a lista considerando a capacidade de cada modelo.
 
 ## Assinatura de chat vs. acesso por API
 
@@ -1030,12 +1033,12 @@ Esses três valores são tudo que você precisa para adicionar um provider no Cl
 |------------|----------|--------------------|------------|
 | [OpenRouter](https://openrouter.ai) | `https://openrouter.ai/api/v1` | ✅ Vários (sufixo `:free`) | Agrega dezenas de modelos de diferentes provedores |
 | [Google AI Studio](https://aistudio.google.com) | `https://generativelanguage.googleapis.com/v1beta/openai` | ✅ Gemini Flash | Gratuito com limites generosos |
-| [Anthropic Console](https://console.anthropic.com) | `https://api.anthropic.com/v1` | ❌ | Pay-as-you-go; Claude Haiku é o mais barato |
+| [Anthropic Console](https://console.anthropic.com) | `https://api.anthropic.com/v1` | ❌ | Apenas via camada de compatibilidade OpenAI da Anthropic (experimental/testes) |
 | [OpenAI](https://platform.openai.com) | `https://api.openai.com/v1` | ❌ | Pay-as-you-go |
 | [Together.ai](https://api.together.xyz) | `https://api.together.xyz/v1` | Créditos iniciais | Open-source models |
 | [Groq](https://console.groq.com) | `https://api.groq.com/openai/v1` | ✅ Limites altos | Inferência ultra-rápida |
 
-> ⚠️ O ClaudeZen **só suporta APIs compatíveis com o formato OpenAI** (`POST /chat/completions`). A API nativa da Anthropic usa um formato diferente — use o OpenRouter ou um adaptador se quiser usar modelos Claude por API.
+> ⚠️ O ClaudeZen **só suporta APIs com protocolo OpenAI Chat Completions** (`POST /chat/completions`). A API nativa da Anthropic usa outro formato (`POST /v1/messages`). Modelos Claude podem ser acessados via agregadores (como OpenRouter) ou pela camada de compatibilidade OpenAI oferecida pela própria Anthropic. A Anthropic descreve essa camada como voltada para testes e prototipação, com limitações conhecidas (por exemplo, ausência de prompt caching e raciocínio detalhado não retornado). O ClaudeZen não foi validado com a API direta da Anthropic.
 
 ## Como o contexto é preservado
 
@@ -1053,7 +1056,7 @@ Isso significa que:
 - **Fallback automático é transparente.** O Claude Code não sabe (nem precisa saber) qual provider respondeu cada mensagem.
 - **Reiniciar o servidor também não perde contexto.** O histórico fica no Claude Code, não no proxy.
 
-## Exemplo: configurar o Claude via API paga (Anthropic Console)
+## Exemplo: configurar provider via camada compatível com OpenAI (ex.: Anthropic Console)
 
 1. Crie conta em [console.anthropic.com](https://console.anthropic.com), adicione método de pagamento e gere uma API key.
 2. No painel `/admin` → aba **Ordem de Fallback** → **Adicionar Provider**:
@@ -1061,7 +1064,7 @@ Isso significa que:
    - **Base URL:** `https://api.anthropic.com/v1`
    - **Model:** `claude-haiku-4-5`
    - **API Key:** cole sua chave `sk-ant-...`
-3. Salve. O provider aparece no fallback order e pode ser usado em modo MANUAL ou CUSTOM.
+3. Salve. O provider aparece no fallback order e pode ser usado em modo MANUAL ou CUSTOM (sujeito às limitações da camada de compatibilidade da Anthropic citadas acima).
 
 > 💡 Modelos `:free` do OpenRouter são uma ótima forma de começar sem gastar nada, com fallback para modelos pagos quando necessário.
 

@@ -249,18 +249,20 @@ Tokens estimados < threshold   →  normalProvider   (rápido, contexto menor)
 Tokens estimados ≥ threshold   →  largeContextProvider  (maior janela)
 ```
 
-Projetos de escala real (plataformas de e-commerce, marketplaces, sistemas com muitos microserviços) geram requisições com facilidade acima de 100k tokens quando o Claude Code lê múltiplos arquivos, acumula histórico longo e usa muitas tools. Nesse cenário, o router automaticamente direciona para o `largeContextProvider`.
+Em sessões onde o Claude Code lê muitos arquivos, acumula histórico extenso ou executa chamadas consecutivas de ferramentas, o tamanho total da mensagem pode ultrapassar o limiar de contexto normal. Nesses casos, o modo AUTO chaveia a requisição para o `largeContextProvider` (por exemplo, Google Gemini Flash).
 
-### Janela de contexto dos providers
+**Comportamento de fallback e erros 400:** o router aciona contingência/fallback exclusivamente em erros transitórios de status 429 ou 5xx. Erros com status 400 (inclusive rejeições por extrapolação de janela máxima de contexto do upstream) **não acionam fallback** e são retornados diretamente ao cliente. Embora a troca de provedor preserve o histórico integral da conversa, cada modelo de destino possui sua própria capacidade máxima de contexto e o router não filtra a ordem de fallback com base no tamanho do histórico.
 
-| Provider | Janela de contexto | Posição padrão |
-|----------|--------------------|----------------|
-| Gemini 2.0 Flash | **1.000.000 tokens** | `largeContextProvider` |
-| APInex / Mimo | ~32k–128k | `normalProvider` |
-| OpenRouter `:free` (Qwen, Laguna) | 8k–200k | fallback |
-| Claude Haiku (Anthropic pago) | 200.000 tokens | configurável |
-| GPT-4o (OpenAI pago) | 128.000 tokens | configurável |
-| Groq (Llama 3.3 70B, gratuito) | 128.000 tokens | configurável |
+### Janela de contexto dos providers (aproximadas; confira na documentação oficial)
+
+| Provider | Janela de contexto (aproximada) | Posição padrão |
+|----------|---------------------------------|----------------|
+| Google Gemini Flash (`gemini-3.8-flash`) | Até ~1.000.000 tokens | `largeContextProvider` |
+| APInex / Mimo | ~32k–128k tokens | `normalProvider` |
+| OpenRouter (Qwen, Laguna) | Variável (ex.: 8k–200k tokens) | fallback |
+| Claude Haiku (via camada OpenAI-compatível) | ~200.000 tokens | configurável |
+| GPT-4o (OpenAI pago) | ~128.000 tokens | configurável |
+| Groq (Llama 3.3 70B) | ~128.000 tokens | configurável |
 
 ### Como ajustar
 
@@ -501,12 +503,12 @@ Valores retornados pela API administrativa: `keySource` (`"stored"` | `"env"` | 
 
 ## 13.6 Proteções do painel administrativo
 
-- Token administrativo aleatório por inicialização (`crypto.randomBytes(32)`), exibido no banner; comparação em tempo constante (`crypto.timingSafeEqual`).
+- Token administrativo aleatório por inicialização (`crypto.randomBytes(32)`), exibido no banner; se fixado via variável `CLAUDEZEN_ADMIN_TOKEN`, o valor não muda a cada reinício do servidor e deve ser mantido em sigilo; comparação em tempo constante (`crypto.timingSafeEqual`).
 - Validação do header `Host` (apenas `127.0.0.1:<porta>` ou `localhost:<porta>`) contra DNS rebinding.
 - Validação do header `Origin` em métodos que alteram estado (POST/PUT/PATCH/DELETE) contra CSRF.
 - Corpo limitado a 64 KB; sem CORS aberto; erros em português com status HTTP coerentes.
 - **Segurança da interface web `/admin`:**
-  * Headers HTTP estritos: `Content-Security-Policy: default-src 'self'`, `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`.
+  * Headers HTTP estritos: `Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none';`, `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`.
   * Manipulação segura do DOM: uso estrito de `createElement` e `textContent`; proibição de `innerHTML`, `outerHTML`, `document.write` ou `eval`.
   * Campo de chave com `type="password"`, `autocomplete="off"` e limpeza imediata após envio.
   * Token capturado na URL, guardado em `sessionStorage` e limpo da barra de endereços com `history.replaceState`.
@@ -596,10 +598,10 @@ O `router.js` foi auditado com testes sobre payloads simulados. A fórmula centr
 | Interface `/admin`: proteção de caminhos proibidos e traversal (404) | Upstream simulado | ✅  |
 | Interface `/admin`: análise estática (zero innerHTML/eval/CDNs/scripts inline) | Local | ✅        |
 | Interface `/admin`: ciclo completo da UI via API (mock upstream, test, order, mode, delete) | Upstream simulado | ✅ |
-| Suíte de testes automatizados (`node --test`): 99 testes     | Local              | ✅ (99 pass, 0 fail) |
+| Suíte de testes automatizados (`node --test`): 100 testes    | Local              | ✅ (100 pass, 0 fail) |
 | **Fallback com falha real de provedor (429/5xx reais)**       | Provider real      | ⏳ **pendente** |
 
-**Nota de rigor:** os cenários de fallback, cooldown, validação, streaming, API administrativa e interface visual `/admin` foram validados com upstreams HTTP locais simulados e análise estática automatizada, comprovando a robustez e segurança do ClaudeZen. Total de 99 testes automatizados cobrindo o projeto. Eles não substituem um teste com falha real de um provedor (por exemplo, esgotar a quota do APInex e observar a transição para o Gemini).
+**Nota de rigor:** os cenários de fallback, cooldown, validação, streaming, API administrativa e integridade/segurança do `/admin` foram validados com upstreams HTTP locais simulados e análise estática automatizada (100 testes automatizados no total). A validação visual do layout do painel no navegador é manual. Eles não substituem um teste com falha real de um provedor (por exemplo, esgotar a quota do APInex e observar a transição para o Gemini).
 
 ---
 
@@ -729,7 +731,7 @@ apinex → gemini → openrouter-qwen → openrouter-laguna
   * `admin/admin.css`: tema adaptativo claro/escuro (`prefers-color-scheme`), tipografia moderna do sistema, feedback visual de status, botões de ação e modal.
   * `admin/admin.js`: lógica client-side pura (zero npm, zero CDNs), manipulação segura do DOM exclusivamente via `createElement` e `textContent` (zero `innerHTML`), persistência do token em `sessionStorage` e polling de status (5s) pausado quando a aba está oculta (`visibilitychange`).
 - **Entrega estática e segurança em `server.js`:**
-  * Rotas `/admin`, `/admin/`, `/admin/admin.css` e `/admin/admin.js` servidas com headers estritos: `Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; frame-ancestors 'none'`, `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`.
+  * Rotas `/admin`, `/admin/`, `/admin/admin.css` e `/admin/admin.js` servidas com headers estritos: `Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none';`, `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`.
   * Bloqueio rigoroso de path traversal (`/admin/../server.js`, encoding traversal, barras duplas) retornando `404` estrito.
   * Preservação total do proxy `/v1`, switcher e endpoints existentes.
 - **Testes da UI (`test/admin-ui.test.js`):**
