@@ -757,7 +757,35 @@ apinex → gemini → openrouter-qwen → openrouter-laguna
   * Edições no `config.json` via `/admin/api` são recarregadas a quente na memória.
   * Trocas de modo (`auto`, `custom`, `manual`) são refletidas imediatamente na próxima requisição sem reiniciar o processo.
   * Alterações no código-fonte Node.js (`server.js`, `router.js`, etc.) continuam exigindo reinicialização do processo (`Ctrl+C` e `node server.js`).
-- **Total de testes da suíte:** 100 testes automatizados passando sem falhas via `node --test`.
+
+**Implementado na Etapa 4 (Experiência de Primeiro Uso, Onboarding Zero-Config e Launchers):**
+
+- **Configuração local não versionada:**
+  * `config.json` e `routing-state.json` foram removidos do rastreamento do Git e adicionados ao `.gitignore`.
+  * Criação do modelo mínimo limpo `config.example.json` (apenas `listen`, `routing` padrão e `"providers": {}`).
+  * Na primeira execução de um novo clone, se `config.json` não existir, ele é gerado automaticamente a partir de `config.example.json` com aviso informativo no banner de inicialização.
+- **Modo de configuração (subir sem provider / sem chave):**
+  * O objeto `providers` vazio deixou de abortar o servidor: `validate-config.js` emite apenas um aviso no console orientando a abrir `/admin`.
+  * Na ausência de providers, a ausência de `fallbackOrder`/`normalProvider`/`largeContextProvider` também não gera erro de inicialização.
+  * Se uma requisição chegar a `/v1` sem nenhum provider com chave disponível, o servidor responde com status HTTP 503 e payload de erro explicativo em português indicando a URL do painel (`http://127.0.0.1:<porta>/admin`) sem expor tokens ou credenciais.
+  * A criação do primeiro provider via `POST /admin/api/providers` passa a derivar automaticamente os papéis e o fallback inicial, habilitando imediatamente o tráfego do proxy sem exigir edição manual do arquivo.
+- **Launchers e flag `--open`:**
+  * Inclusão da flag `--open` e da opção `admin.openOnStart` (desligada por padrão no config).
+  * Abertura do navegador desacoplada e segura através de `child_process.spawn` com passagem de argumentos em array por plataforma (sem uso de subshell, sem interpolação de strings):
+    - Windows: `cmd` com argumentos `["/c", "start", "", url]`;
+    - macOS: `open` com argumento `[url]`;
+    - Linux: `xdg-open` com argumento `[url]`.
+  * Tratamento defensivo de falhas de spawn (não derruba o processo do servidor se a interface gráfica ou navegador padrão falharem).
+  * Criação de `iniciar.bat` (Windows) e `iniciar.sh` (Linux/macOS) que invocam `node server.js --open` a partir do diretório raiz do projeto.
+- **Presets de provedores e checklist de primeiros passos na UI:**
+  * Rota autenticada `GET /admin/api/presets` consumindo `presets.json` (OpenRouter, Gemini, Groq, OpenAI, Together AI, Mistral e Personalizado).
+  * Formulário de novo provider preenche a URL base e sugere o ID a partir do modelo selecionado, com placeholder instrutivo e notas de compatibilidade.
+  * Cartão visual dinâmico "Primeiros passos" com checklist de pendências e cartão "Conectar o Claude Code" com snippet do `settings.json` e botão copiar.
+  * Todas as operações de DOM mantêm rigorosa segurança: uso exclusivo de `createElement`, `textContent` e `setAttribute`, sem nenhum recurso externo ou injeção de HTML.
+- **Decisões de segurança:**
+  * **Token na URL via launcher:** o token administrativo é gerado aleatoriamente a cada boot (ou herdado de `CLAUDEZEN_ADMIN_TOKEN`) e passado na URL via argumento do processo do navegador. Isso torna o token temporariamente visível na lista de processos local da máquina do usuário durante o disparo, o que é aceitável para uso local em máquina pessoal de desenvolvimento, mantendo `--open` desativado por padrão no core.
+  * **Segurança da UI:** A validação estática automatizada garante ausência de `innerHTML`, `outerHTML`, `insertAdjacentHTML` e `eval` em toda a pasta `admin/`. A validação visual do layout e interações em navegadores reais continua sendo manual.
+- **Total de testes da suíte:** 111 testes automatizados passando sem falhas via `node --test`.
 
 ---
 
@@ -776,19 +804,19 @@ apinex → gemini → openrouter-qwen → openrouter-laguna
 
 # 22. Conclusão
 
-O ClaudeZen evoluiu de um bridge de upstream único para uma camada completa e robusta de abstração e roteamento de IA com três modos operacionais (`AUTO`, `CUSTOM` e `MANUAL`), fallback em cadeia, cooldown, **streaming em tempo real**, **observabilidade por requisição** e interface web administrativa `/admin` organizada em abas horizontais com grid responsivo e segurança estrita contra DNS rebinding, CSRF e XSS.
+O ClaudeZen evoluiu de um bridge de upstream único para uma camada completa e robusta de abstração e roteamento de IA com três modos operacionais (`AUTO`, `CUSTOM` e `MANUAL`), fallback em cadeia, cooldown, **streaming em tempo real**, **observabilidade por requisição**, experiência de primeiro uso zero-configuração (`config.example.json` e inicializadores automáticos) e interface web administrativa `/admin` organizada em abas horizontais com presets de provedores, grid responsivo e segurança estrita contra DNS rebinding, CSRF e XSS.
 
 A revisão da arquitetura permitiu desacoplar claramente as responsabilidades:
 - O `router.js` decide o provider e gerencia métricas/cooldown;
-- O `server.js` faz proxy, conversão de protocolo e serve a interface administrativa;
+- O `server.js` faz proxy, conversão de protocolo, inicialização com `--open` e serve a interface administrativa;
 - O `validate-config.js` protege contra configurações inválidas na inicialização e na API;
 - O `secrets-store.js` mantém credenciais sensíveis isoladas do código e versionamento.
 
 ```text
-Claude Code → ClaudeZen Proxy → Request Router → APInex | Gemini | OpenRouter
+Claude Code → ClaudeZen Proxy → Request Router → APInex | Gemini | OpenRouter | Groq ...
                  │ (127.0.0.1:8787)
-                 ├── /admin (Painel Web em Abas)
+                 ├── /admin (Painel Web em Abas + Presets + Checklist)
                  └── /admin/api (API Administrativa Local)
 ```
 
-**Estado final:** 100 testes automatizados (`node --test`) passando com 100% de sucesso. Operacional e validado com provedores reais para AUTO, MANUAL e uso real; fallback, cooldown, modo CUSTOM e streaming validados em ambiente simulado.
+**Estado final:** 111 testes automatizados (`node --test`) passando com 100% de sucesso. Operacional e validado com provedores reais para AUTO, MANUAL e uso real; fallback, cooldown, modo CUSTOM, onboarding e streaming validados em ambiente simulado.

@@ -10,7 +10,45 @@ http://127.0.0.1:8787
 
 O ClaudeZen decide internamente qual provider e qual modelo serão utilizados.
 
-> **Status do projeto: em desenvolvimento ativo.** A versão atual está operacional (AUTO, MANUAL, CUSTOM, fallback, cooldown, streaming e observabilidade) e já suporta **vários providers por plataforma** (por exemplo, dois modelos do OpenRouter — Qwen e Laguna — como contingências independentes). A configuração genérica, a validação na inicialização, o painel `/admin` com abas horizontais e grid responsivo, o switcher e os testes automatizados (100 testes) cobrem a entrega da API, integridade e segurança (a validação visual do layout no navegador é manual). Permanece pendente o teste com **falha real** de um provedor. Detalhes na [seção 20 do relatório técnico](RELATORIO.md#20-pontos-a-melhorar-em-desenvolvimento).
+> **Status do projeto: em desenvolvimento ativo.** A versão atual está operacional (AUTO, MANUAL, CUSTOM, fallback, cooldown, streaming e observabilidade) e já suporta **vários providers por plataforma** (por exemplo, dois modelos do OpenRouter — Qwen e Laguna — como contingências independentes). A configuração genérica, a validação na inicialização, o painel `/admin` com abas horizontais e grid responsivo, o switcher e os testes automatizados (111 testes) cobrem a entrega da API, integridade e segurança (a validação visual do layout no navegador é manual). Permanece pendente o teste com **falha real** de um provedor. Detalhes na [seção 20 do relatório técnico](RELATORIO.md#20-pontos-a-melhorar-em-desenvolvimento).
+
+---
+
+## Início rápido
+
+Experiência de primeiro uso zero-configuração: qualquer pessoa consegue rodar e configurar o ClaudeZen exclusivamente pelo painel `/admin`, sem editar JSON e sem variáveis de ambiente.
+
+1. **Pré-requisito:** Node.js `>= 18.0.0` instalado.
+2. **Clonar o repositório:**
+   ```bash
+   git clone https://github.com/lucazcoding/claude-zen.git
+   cd claude-zen
+   ```
+3. **Iniciar o ClaudeZen:**
+   - No Windows: dê duplo clique em `iniciar.bat` (ou execute `node server.js --open`).
+   - No Linux/macOS: execute `./iniciar.sh` (ou `node server.js --open`).
+   *(Na primeira execução, o `config.json` local é gerado automaticamente a partir de `config.example.json`).*
+4. **Abrir o painel administrativo:**
+   - Com `iniciar.bat` / `--open`, o navegador abre automaticamente no endereço do painel com token (ex.: `http://127.0.0.1:8787/admin?token=...`). Se não abrir, basta copiar o link com token exibido no banner do terminal.
+5. **Adicionar seu primeiro provedor:**
+   - No painel `/admin`, clique em **+ Novo provider**.
+   - Escolha um provedor no menu de presets (OpenRouter, Google Gemini, Groq, OpenAI, Together, Mistral ou Personalizado).
+   - Insira o modelo desejado (copiado da documentação do provedor) e a chave de API.
+   - Clique em **Salvar e testar**. A chave é gravada com segurança no `secrets.json` da sua máquina, fora do repositório.
+6. **Conectar o Claude Code:**
+   - No cartão **Conectar o Claude Code** exibido no topo do painel, clique em **Copiar** no bloco de configuração:
+     ```json
+     {
+       "env": {
+         "ANTHROPIC_BASE_URL": "http://127.0.0.1:8787"
+       }
+     }
+     ```
+   - Cole no arquivo `settings.json` do Claude Code conforme a documentação oficial da Anthropic.
+7. **Pronto!** Abra seu terminal e rode:
+   ```bash
+   claude
+   ```
 
 ---
 
@@ -145,7 +183,7 @@ Em ambos os casos, é um **novo provider independente**, com ID, `model` e `apiK
 
 ### Requisito de compatibilidade
 
-O ClaudeZen envia uma requisição **POST** para `{baseUrl}/chat/completions` (o `baseUrl` é normalizado: se não terminar em `/v1`, esse sufixo é adicionado automaticamente). O corpo da requisição e os headers seguem o formato da **API de Chat Completions da OpenAI** (`Authorization: Bearer <chave>`, `Content-Type: application/json`).
+O ClaudeZen envia uma requisição **POST** para `{baseUrl}/chat/completions`. O `baseUrl` é normalizado pela função `normalizeBaseUrl`: ela remove barras no final e, se a URL não terminar exatamente com o sufixo `/v1`, adiciona `/v1` ao fim (portanto, URLs como `https://generativelanguage.googleapis.com/v1beta/openai` recebem `/v1`, tornando-se `.../v1beta/openai/v1`, que é o endpoint OpenAI-compatível aceito pelo Gemini). O corpo da requisição e os headers seguem o formato da **API de Chat Completions da OpenAI** (`Authorization: Bearer <chave>`, `Content-Type: application/json`).
 
 > **Limitação atual:** só há suporte a providers com API **compatível com a OpenAI**. Não existe adaptação de formato por provider. Se a plataforma usar um formato diferente, será necessário adaptar o `router.js` (fora do escopo deste guia).
 
@@ -275,7 +313,11 @@ ClaudeZen/
 ├── router.js
 ├── validate-config.js
 ├── secrets-store.js
-├── config.json
+├── config.example.json
+├── config.json               (local, não versionado)
+├── presets.json
+├── iniciar.bat
+├── iniciar.sh
 ├── switcher.bat
 ├── switcher-helper.js
 ├── routing-state.json
@@ -286,18 +328,22 @@ ClaudeZen/
 └── test/
 ```
 
-| Arquivo              | Responsabilidade                                                                                                                              |
-| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `server.js`          | Servidor HTTP, conversão Anthropic ↔ OpenAI, streaming, rotas `/admin` e `/admin/api`, **apresentação dos logs**, integração com o router. |
-| `router.js`          | Escolha do provider, estimativa de contexto, fallback, cooldown, timeout, modos AUTO/MANUAL/CUSTOM, métricas de sessão.                       |
-| `validate-config.js` | Validação centralizada da configuração (erros que abortam e avisos).                                                                          |
-| `secrets-store.js`   | Armazenamento seguro de chaves de API fora do repositório (`~/.claudezen/secrets.json`).                                                       |
-| `config.json`        | Providers e regras do router.                                                                                                                 |
-| `routing-state.json` | Modo operacional atual (`auto`, `manual` ou `custom`), lido a cada requisição.                                                                |
-| `switcher.bat`       | Menu dinâmico de troca rápida de modo/provider.                                                                                                |
-| `switcher-helper.js` | Lê o `config.json` para o switcher/API e grava o `routing-state.json`.                                                                        |
-| `admin/`             | Interface web administrativa em abas horizontais (HTML, CSS e JS puros, sem dependências).                                                   |
-| `test/`              | Testes automatizados (`node --test`, 100 testes).                                                                                             |
+| Arquivo               | Responsabilidade                                                                                                                              |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `server.js`           | Servidor HTTP, conversão Anthropic ↔ OpenAI, streaming, rotas `/admin` e `/admin/api`, **apresentação dos logs**, integração com o router. |
+| `router.js`           | Escolha do provider, estimativa de contexto, fallback, cooldown, timeout, modos AUTO/MANUAL/CUSTOM, métricas de sessão.                       |
+| `validate-config.js`  | Validação centralizada da configuração (erros que abortam e avisos).                                                                          |
+| `secrets-store.js`    | Armazenamento seguro de chaves de API fora do repositório (`~/.claudezen/secrets.json`).                                                       |
+| `config.example.json` | Modelo limpo versionado para inicialização e onboarding de novos usuários.                                                                    |
+| `config.json`         | Configuração local e privada (ignorado pelo git; gerado a partir do exemplo na primeira execução se ausente).                                |
+| `presets.json`        | Presets de provedores OpenAI-compatíveis para a tela `/admin`.                                                                                 |
+| `iniciar.bat`         | Launcher para Windows com inicialização do servidor e abertura automática do painel no navegador (`--open`).                                 |
+| `iniciar.sh`          | Launcher equivalente para ambientes Linux e macOS.                                                                                            |
+| `routing-state.json`  | Modo operacional atual (`auto`, `manual` ou `custom`), lido a cada requisição.                                                                |
+| `switcher.bat`        | Menu dinâmico de troca rápida de modo/provider via terminal.                                                                                  |
+| `switcher-helper.js`  | Lê o `config.json` para o switcher/API e grava o `routing-state.json`.                                                                        |
+| `admin/`              | Interface web administrativa em abas horizontais (HTML, CSS e JS puros, sem dependências).                                                   |
+| `test/`               | Testes automatizados (`node --test`, 111 testes).                                                                                             |
 
 Divisão de responsabilidades: **o router calcula; o server apresenta.** A estimativa de contexto, a divisão por categoria e a escolha do provider vêm do `router.js`; o `server.js` apenas formata e exibe, e traz o `usage` real que o provider informa no fim da resposta.
 
@@ -307,58 +353,60 @@ Divisão de responsabilidades: **o router calcula; o server apresenta.** A estim
 
 ## 1. API Keys
 
-As API keys **não** devem ser colocadas no `config.json`. Existem dois caminhos para configurá-las:
+As API keys **nunca** devem ser colocadas no `config.json`. Existem dois caminhos para configurá-las:
 
-### ✅ Caminho recomendado: painel `/admin` (não requer reiniciar)
+### ✅ Caminho principal: painel `/admin` (funciona em qualquer sistema operacional)
 
-Abra `http://127.0.0.1:8787/admin` (o link com token aparece no banner de inicialização) e use o botão **Adicionar Provider** ou edite um provider existente para salvar a chave.
+Abra `http://127.0.0.1:8787/admin` (ou use `iniciar.bat` / `./iniciar.sh` para abrir direto no navegador). O token de acesso aparece no banner de inicialização. Use o botão **+ Novo provider** ou edite um provider existente para salvar a chave com segurança.
 
 O ClaudeZen armazena a chave em:
 ```text
-%USERPROFILE%\.claudezen\secrets.json
+~/.claudezen/secrets.json
+(no Windows: %USERPROFILE%\.claudezen\secrets.json)
 ```
-Esse arquivo fica **fora do repositório**, nunca é versionado e é lido automaticamente a cada requisição — sem reiniciar o servidor, sem conhecer nomes de variáveis de ambiente.
+Esse arquivo fica **fora do repositório**, nunca é versionado e é lido automaticamente a cada requisição — sem reiniciar o servidor e sem necessidade de configurar variáveis de ambiente.
 
-> **Por que este caminho é melhor?** O `config.json` que está no repositório define o nome da variável de ambiente de cada provider (`apiKeyEnv`). Cada dono do repositório pode ter escolhido nomes diferentes (ex.: `APINEX_API_KEY`, `MINHA_CHAVE_APINEX`, etc.). Quem clonar o projeto não tem como saber esses nomes sem ler o `config.json`. Usando o painel `/admin`, nada disso importa: a chave é armazenada por **ID do provider** e o sistema a encontra automaticamente.
+> **Por que este caminho é melhor?** O `config.json` local define apenas regras de roteamento e metadados. Usando o painel `/admin`, as credenciais ficam isoladas por ID de provider no `secrets.json` privado do seu usuário, com criptografia/permissões locais e teste imediato de conectividade com o upstream.
 
-### Caminho alternativo: variáveis de ambiente do Windows
+### ⚙️ Configuração avançada: variáveis de ambiente
 
-Se preferir variáveis de ambiente (ex.: em servidores, CI ou automação), use os nomes definidos em `apiKeyEnv` dentro de cada provider no `config.json`. Para a configuração padrão deste repositório:
+Se preferir utilizar variáveis de ambiente (ex.: em servidores sem interface gráfica, pipelines de CI ou scripts de automação), defina a variável especificada em `apiKeyEnv` para cada provider:
 
-```powershell
-setx APINEX_API_KEY "SUA_CHAVE"
-setx GEMINI_API_KEY "SUA_CHAVE"
-setx CLAUDEZEN_OPENROUTER_QWEN_API_KEY "SUA_CHAVE"
-setx CLAUDEZEN_OPENROUTER_LAGUNA_API_KEY "SUA_CHAVE"
-```
+- **Windows (PowerShell / CMD):**
+  ```powershell
+  setx APINEX_API_KEY "SUA_CHAVE"
+  setx GEMINI_API_KEY "SUA_CHAVE"
+  setx CLAUDEZEN_OPENROUTER_QWEN_API_KEY "SUA_CHAVE"
+  setx CLAUDEZEN_OPENROUTER_LAGUNA_API_KEY "SUA_CHAVE"
+  ```
+  *(O utilitário `setx` é exclusivo do Windows. É necessário abrir um novo terminal após executar o `setx` para carregar as novas variáveis).*
 
-> ⚠️ Se você clonou um repositório de outra pessoa, **abra o `config.json` primeiro** e veja o campo `apiKeyEnv` de cada provider — os nomes das variáveis podem ser diferentes dos listados acima.
-
-Depois abra um **novo** terminal e verifique:
-
-```powershell
-$env:APINEX_API_KEY
-$env:GEMINI_API_KEY
-$env:CLAUDEZEN_OPENROUTER_QWEN_API_KEY
-$env:CLAUDEZEN_OPENROUTER_LAGUNA_API_KEY
-```
+- **Linux / macOS:**
+  ```bash
+  export APINEX_API_KEY="SUA_CHAVE"
+  export GEMINI_API_KEY="SUA_CHAVE"
+  export CLAUDEZEN_OPENROUTER_QWEN_API_KEY="SUA_CHAVE"
+  export CLAUDEZEN_OPENROUTER_LAGUNA_API_KEY="SUA_CHAVE"
+  ```
 
 ### Ordem de resolução da chave
 
 Para cada provider, o ClaudeZen busca a chave nesta ordem:
 
-1. **`secrets.json`** — salvo pelo painel `/admin` (chave por ID do provider)
-2. **Variável de ambiente** — nome em `apiKeyEnv` do `config.json`
-3. Se nenhum encontrado → erro `API key ... is missing`
+1. **`secrets.json`** — salvo pelo painel `/admin` (chave vinculada ao ID do provider)
+2. **Variável de ambiente** — nome indicado em `apiKeyEnv` no `config.json`
+3. Se nenhum encontrado → erro explicativo indicando que a chave está ausente e sugerindo salvar pelo painel `/admin` ou definir a variável correspondente.
 
-### Diagnóstico no banner
+### Diagnóstico no banner de inicialização
 
-Ao iniciar, o ClaudeZen mostra a origem de cada chave:
+Ao iniciar, o ClaudeZen exibe a situação de cada provider e avisa caso seja a primeira execução:
 
 ```text
+   ℹ️  Primeira execução: config.json criado a partir de config.example.json
+...
 ● APInex     → armazenada localmente (...ABCD)
 ● Gemini     → variável GEMINI_API_KEY (...WXYZ)
-○ OpenRouter → chave ausente: defina CLAUDEZEN_OPENROUTER_QWEN_API_KEY
+○ OpenRouter → chave ausente: salve pelo painel /admin ou defina a variável CLAUDEZEN_OPENROUTER_QWEN_API_KEY
 ```
 
 **Nunca faça commit das API keys.**
@@ -1082,10 +1130,13 @@ Isso significa que:
 [x] Configuração genérica: vários modelos da mesma plataforma
 [x] Validação da configuração na inicialização
 [x] Menu do switcher gerado a partir do config.json
-[x] Testes automatizados (100 testes com node --test)
+[x] Testes automatizados (111 testes com node --test)
 [x] API administrativa local (/admin/api) e armazenamento seguro de chaves
 [x] Dashboard web / tela de configuração local (/admin) com abas e grid
 [x] Modo CUSTOM (fallback manual por ordem direta da lista)
+[x] Onboarding zero-configuração (primeira execução sem JSON ou env vars)
+[x] Presets de provedores e checklist de primeiros passos na UI
+[x] Flag --open e launchers iniciar.bat / iniciar.sh
 [ ] Teste com falha real de provedor (429/5xx)
 [ ] Circuit breaker completo
 [ ] Health checks ativos
