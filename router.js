@@ -1215,10 +1215,11 @@ function createRouter(config, deps) {
     if (!key) {
       const error =
         new Error(
-          "API key environment variable " +
-          (envName ||
-            "(not configured)") +
-          " is missing."
+          "Chave de API ausente para o provider \"" +
+          (provider.name || providerId) +
+          "\". Salve pelo painel /admin ou defina a variável " +
+          (envName || "(apiKeyEnv não configurada)") +
+          "."
         );
 
       error.status =
@@ -1705,11 +1706,38 @@ function createRouter(config, deps) {
    * ==========================================================
    */
 
+  function hasAnyUsableProvider() {
+    const ids = Object.keys(providers);
+    if (!ids.length) return false;
+    for (const id of ids) {
+      const p = providers[id];
+      if (secrets && secrets.get(id)) return true;
+      if (p && p.apiKeyEnv && process.env[p.apiKeyEnv]) return true;
+    }
+    return false;
+  }
+
   async function call(
     req,
     payload,
     upstreamContext
   ) {
+    if (!hasAnyUsableProvider()) {
+      session.failures += 1;
+      const port =
+        config.port ||
+        req?.socket?.localPort ||
+        (req?.headers?.host && req.headers.host.includes(":")
+          ? req.headers.host.split(":")[1]
+          : 8787);
+      const error = new Error(
+        `ClaudeZen ainda não tem nenhum provider com chave configurada. Abra http://127.0.0.1:${port}/admin para configurar.`
+      );
+      error.status = 503;
+      error.type = "proxy_error";
+      throw error;
+    }
+
     const requestStarted =
       Date.now();
 

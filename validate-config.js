@@ -34,10 +34,10 @@ function validateConfig(config) {
 
   const providerIds = Object.keys(providers);
 
-  /* ---- providers vazio ou ausente (erro) ---- */
+  /* ---- providers vazio ou ausente (aviso) ---- */
   if (!providerIds.length) {
-    errors.push(
-      "Nenhum provider configurado: o objeto \"providers\" está ausente ou vazio no config.json.",
+    warnings.push(
+      "Nenhum provider configurado; abra o painel /admin",
     );
   }
 
