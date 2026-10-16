@@ -5,6 +5,7 @@
 .claude/
 .claudezen/
 .claudezen-backups/
+config.json
 routing-state.json
 routing-state.json.tmp
 node_modules/

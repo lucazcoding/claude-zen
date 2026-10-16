@@ -1,0 +1,12 @@
+{
+  "listen": {
+    "host": "127.0.0.1",
+    "port": 8787
+  },
+  "routing": {
+    "mode": "auto",
+    "largeContextThreshold": 100000,
+    "cooldownSeconds": 300
+  },
+  "providers": {}
+}

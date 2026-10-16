@@ -12,12 +12,36 @@ const cachePath = path.join(
 
 process.env.CLAUDE_OPENCODE_REASONING_CACHE = cachePath;
 
+const testConfigDir = fs.mkdtempSync(
+  path.join(os.tmpdir(), "claudezen-server-test-cfg-"),
+);
+const testConfigPath = path.join(testConfigDir, "config.json");
+fs.writeFileSync(
+  testConfigPath,
+  JSON.stringify({
+    listen: { host: "127.0.0.1", port: 8787 },
+    routing: { mode: "auto", largeContextThreshold: 100000, cooldownSeconds: 300 },
+    providers: {
+      test: {
+        name: "Test Provider",
+        baseUrl: "http://127.0.0.1:8787/v1",
+        model: "deepseek-v4-pro[1m]",
+        apiKeyEnv: "TEST_API_KEY",
+        timeoutMs: 5000,
+      },
+    },
+  }),
+  "utf8",
+);
+process.env.CLAUDEZEN_CONFIG = testConfigPath;
+
 const bridge = require("../server.js");
 
 test.after(() => {
   bridge.flushReasoningCache();
   fs.rmSync(cachePath, { force: true });
   fs.rmSync(`${cachePath}.tmp`, { force: true });
+  fs.rmSync(testConfigDir, { recursive: true, force: true });
 });
 
 test("anthropicToOpenAi converts messages, tools, and DeepSeek reasoning", () => {
