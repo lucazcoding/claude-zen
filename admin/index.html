@@ -21,6 +21,23 @@
     </section>
 
     <section id="app" class="hidden">
+
+      <!-- Cartão: Primeiros passos (visível enquanto houver pendências) -->
+      <section id="getting-started" class="card getting-started hidden" aria-label="Primeiros passos">
+        <h2>Primeiros passos</h2>
+        <ul id="gs-checklist" class="gs-list"></ul>
+      </section>
+
+      <!-- Cartão: Conectar o Claude Code -->
+      <section id="connect-claude" class="card connect-claude hidden" aria-label="Conectar o Claude Code">
+        <h2>Conectar o Claude Code</h2>
+        <p class="muted">Adicione ao <code>settings.json</code> do Claude Code (consulte a documentação oficial do Claude Code para o caminho correto do arquivo):</p>
+        <div class="code-block">
+          <pre id="connect-snippet"></pre>
+          <button type="button" id="copy-snippet" class="secondary">Copiar</button>
+        </div>
+      </section>
+
       <nav class="nav-tabs" role="tablist" aria-label="Seções de configuração">
         <button type="button" class="tab-btn active" role="tab" aria-selected="true" data-tab="tab-providers" id="tab-btn-providers">Providers</button>
         <button type="button" class="tab-btn" role="tab" aria-selected="false" data-tab="tab-routing" id="tab-btn-routing">Roteamento</button>
@@ -98,6 +115,11 @@
         <button type="button" id="modal-close" aria-label="Fechar">✕</button>
       </div>
       <form id="provider-form">
+        <div class="field" id="f-preset-field">
+          <label for="f-preset">Provedor</label>
+          <select id="f-preset"></select>
+          <span class="hint">Selecione um provedor para preencher a Base URL automaticamente.</span>
+        </div>
         <div class="field">
           <label for="f-id">ID</label>
           <input type="text" id="f-id" autocomplete="off" spellcheck="false">
@@ -113,7 +135,7 @@
         </div>
         <div class="field">
           <label for="f-model">Modelo</label>
-          <input type="text" id="f-model" autocomplete="off" spellcheck="false">
+          <input type="text" id="f-model" autocomplete="off" spellcheck="false" placeholder="copie o nome exato do modelo na documentação do provedor">
         </div>
         <div class="field">
           <label for="f-timeout">Timeout (ms, opcional)</label>
@@ -123,7 +145,7 @@
           <legend>Headers</legend>
           <div id="headers-list"></div>
           <button type="button" id="add-header" class="secondary">+ Header</button>
-          <span class="hint warn">NÃO coloque chaves de API em headers: o config.json pode ser versionado no Git. Use o campo de chave.</span>
+          <span class="hint warn">NÃO coloque chaves de API em headers: use o campo de chave de API abaixo para armazenamento seguro.</span>
         </fieldset>
         <div class="field">
           <label for="f-key">Chave de API</label>

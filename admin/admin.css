@@ -480,3 +480,69 @@ button.icon-btn {
     flex: 1;
   }
 }
+
+/* ---------- getting started ---------- */
+
+.getting-started {
+  border-left: 3px solid var(--accent);
+}
+
+.gs-list {
+  list-style: none;
+  padding: 0;
+  margin: 12px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.gs-step {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.95rem;
+  color: var(--text-muted);
+}
+
+.gs-step.done {
+  color: var(--text);
+  text-decoration: line-through;
+  opacity: 0.6;
+}
+
+.gs-check {
+  width: 20px;
+  text-align: center;
+  font-size: 1rem;
+  flex-shrink: 0;
+  color: var(--accent);
+}
+
+/* ---------- connect claude code ---------- */
+
+.connect-claude {
+  border-left: 3px solid rgba(22, 163, 74, 0.6);
+}
+
+.code-block {
+  position: relative;
+  margin-top: 10px;
+  background: var(--surface);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  padding: 12px 14px;
+}
+
+.code-block pre {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--text);
+}
+
+.code-block button {
+  margin-top: 10px;
+}

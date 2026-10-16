@@ -1,0 +1,37 @@
+[
+  {
+    "id": "openrouter",
+    "label": "OpenRouter",
+    "baseUrl": "https://openrouter.ai/api/v1"
+  },
+  {
+    "id": "gemini",
+    "label": "Google Gemini (compatível com OpenAI)",
+    "baseUrl": "https://generativelanguage.googleapis.com/v1beta/openai/v1"
+  },
+  {
+    "id": "groq",
+    "label": "Groq",
+    "baseUrl": "https://api.groq.com/openai/v1"
+  },
+  {
+    "id": "openai",
+    "label": "OpenAI",
+    "baseUrl": "https://api.openai.com/v1"
+  },
+  {
+    "id": "together",
+    "label": "Together AI",
+    "baseUrl": "https://api.together.ai/v1"
+  },
+  {
+    "id": "mistral",
+    "label": "Mistral",
+    "baseUrl": "https://api.mistral.ai/v1"
+  },
+  {
+    "id": "custom",
+    "label": "Personalizado",
+    "baseUrl": ""
+  }
+]

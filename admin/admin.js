@@ -7,6 +7,8 @@
   var pollTimer = null;
   var dragSrcId = null;
   var testStates = {};
+  var presets = [];
+  var testedOk = {};  /* { [providerId]: true } — persiste na sessão */
 
   function $(sel) {
     return document.querySelector(sel);
@@ -156,6 +158,14 @@
     });
   }
 
+  function loadPresets() {
+    return api("/presets").then(function (r) {
+      if (r.status === 200 && Array.isArray(r.body)) {
+        presets = r.body;
+      }
+    }).catch(function () { /* silencia erro de rede */ });
+  }
+
   function errorMessage(body) {
     if (body && body.error) {
       if (Array.isArray(body.error.errors) && body.error.errors.length) {
@@ -185,6 +195,65 @@
       return el("span", { class: "badge offline", text: "offline" });
     }
     return null;
+  }
+
+  /* ---------- getting started ---------- */
+
+  function hasAnyProviderWithKey() {
+    var providers = state && state.providers || {};
+    return Object.keys(providers).some(function (id) {
+      return providers[id].keySource === "stored" || providers[id].keySource === "env";
+    });
+  }
+
+  function hasAnyTestedOk() {
+    return Object.keys(testedOk).length > 0;
+  }
+
+  function renderGettingStarted() {
+    var hasProviders = state && Object.keys(state.providers || {}).length > 0;
+    var hasKey = hasAnyProviderWithKey();
+    var hasTested = hasAnyTestedOk();
+    var allDone = hasProviders && hasKey && hasTested;
+
+    var gs = $("#getting-started");
+    if (allDone) {
+      gs.classList.add("hidden");
+      return;
+    }
+    gs.classList.remove("hidden");
+
+    var list = $("#gs-checklist");
+    clearChildren(list);
+
+    function step(done, text) {
+      var li = document.createElement("li");
+      li.className = "gs-step" + (done ? " done" : "");
+      var cb = document.createElement("span");
+      cb.className = "gs-check";
+      cb.setAttribute("aria-hidden", "true");
+      cb.textContent = done ? "✓" : "○";
+      var txt = document.createElement("span");
+      txt.textContent = text;
+      li.appendChild(cb);
+      li.appendChild(txt);
+      list.appendChild(li);
+    }
+
+    step(hasProviders, "Adicionar um provider");
+    step(hasKey, "Salvar a chave de API");
+    step(hasTested, "Testar a conexão com sucesso");
+    step(false, "Conectar o Claude Code (veja o cartão abaixo)");
+  }
+
+  /* ---------- connect claude code ---------- */
+
+  function renderConnectClaudeCard() {
+    var port = (state && state.port) || 8787;
+    var snippet = '{\n  "env": {\n    "ANTHROPIC_BASE_URL": "http://127.0.0.1:' + port + '"\n  }\n}';
+    var pre = $("#connect-snippet");
+    pre.textContent = snippet;
+    $("#connect-claude").classList.remove("hidden");
   }
 
   /* ---------- render routing ---------- */
@@ -466,6 +535,26 @@
     title.textContent = id ? "Editar provider" : "Novo provider";
     var p = id ? state.providers[id] : null;
 
+    /* preset select: só visível na criação */
+    var presetField = $("#f-preset-field");
+    presetField.style.display = id ? "none" : "";
+    if (!id) {
+      var sel = $("#f-preset");
+      clearChildren(sel);
+      var defOpt = document.createElement("option");
+      defOpt.value = "";
+      defOpt.textContent = "Selecione um provedor…";
+      sel.appendChild(defOpt);
+      presets.forEach(function (preset) {
+        var opt = document.createElement("option");
+        opt.value = preset.id;
+        opt.textContent = preset.label;
+        opt.dataset.baseurl = preset.baseUrl || "";
+        sel.appendChild(opt);
+      });
+      sel.value = "";
+    }
+
     $("#f-id").value = p ? id : "";
     $("#f-id").disabled = !!id;
     $("#f-name").value = p ? p.name || "" : "";
@@ -481,7 +570,7 @@
     $("#remove-key").style.display = id && p && p.keySource === "stored" ? "" : "none";
 
     $("#modal").classList.remove("hidden");
-    (id ? $("#f-name") : $("#f-id")).focus();
+    (id ? $("#f-name") : $("#f-preset")).focus();
   }
 
   function closeForm() {
@@ -660,7 +749,11 @@
           latencyMs: b.latencyMs,
           message: b.message || (b.ok ? "Conexão bem-sucedida" : "Upstream indisponível"),
         };
+        if (b.ok) {
+          testedOk[id] = true;
+        }
         renderProviders();
+        renderGettingStarted();
       })
       .catch(function (e) {
         testStates[id] = {
@@ -771,6 +864,8 @@
     renderRouting();
     renderOrder();
     renderProviders();
+    renderGettingStarted();
+    renderConnectClaudeCard();
   }
 
   /* ---------- polling ---------- */
@@ -859,10 +954,57 @@
       removeStoredKey();
     });
 
-    loadState().then(function (s) {
+    loadPresets().then(function () {
+      return loadState();
+    }).then(function (s) {
       if (s) {
         renderAll();
         startPolling();
+      }
+    });
+
+    /* preset select → preenche baseUrl e sugere ID */
+    $("#f-preset").addEventListener("change", function () {
+      var sel = $("#f-preset");
+      var chosen = sel.options[sel.selectedIndex];
+      if (!chosen) return;
+      var baseUrl = chosen.dataset.baseurl || "";
+      $("#f-baseurl").value = baseUrl;
+      /* sugere ID: <presetId>-<modelo-slug> (editável) */
+      var presetId = chosen.value;
+      if (presetId && presetId !== "custom") {
+        var modelVal = $("#f-model").value.trim();
+        var slug = modelVal
+          ? modelVal.split("/").pop().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")
+          : "";
+        $("#f-id").value = slug ? presetId + "-" + slug : presetId;
+      }
+    });
+
+    /* modelo → atualiza slug do ID quando preset está selecionado */
+    $("#f-model").addEventListener("input", function () {
+      var sel = $("#f-preset");
+      var chosen = sel.options[sel.selectedIndex];
+      if (!chosen || !chosen.value || chosen.value === "custom") return;
+      var presetId = chosen.value;
+      var modelVal = $("#f-model").value.trim();
+      var slug = modelVal
+        ? modelVal.split("/").pop().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")
+        : "";
+      $("#f-id").value = slug ? presetId + "-" + slug : presetId;
+    });
+
+    /* botão copiar snippet */
+    $("#copy-snippet").addEventListener("click", function () {
+      var text = $("#connect-snippet").textContent;
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(function () {
+          toast("Copiado para a área de transferência.", "success");
+        }).catch(function () {
+          toast("Não foi possível copiar automaticamente.", "error");
+        });
+      } else {
+        toast("Copie manualmente o trecho acima.", "");
       }
     });
   });
