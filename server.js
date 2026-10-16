@@ -1,5 +1,6 @@
 const http = require("http");
 const crypto = require("crypto");
+const child_process = require("child_process");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -134,6 +135,7 @@ function envValue(name, fallback) {
 
 function loadConfig() {
   const defaultPath = path.join(__dirname, "config.json");
+  const examplePath = path.join(__dirname, "config.example.json");
 
   const configPath =
     process.env.CLAUDE_OPENCODE_PROXY_CONFIG ||
@@ -142,6 +144,19 @@ function loadConfig() {
     defaultPath;
 
   const resolvedPath = path.resolve(configPath);
+  let createdFromExample = false;
+
+  if (!fs.existsSync(resolvedPath)) {
+    try {
+      if (fs.existsSync(examplePath)) {
+        fs.copyFileSync(examplePath, resolvedPath);
+        createdFromExample = true;
+      }
+    } catch {
+      // Ignora falha de cópia se o diretório não permitir escrita
+    }
+  }
+
   const fileConfig = readJson(resolvedPath) || {};
   const configDir = path.dirname(resolvedPath);
 
@@ -173,6 +188,7 @@ function loadConfig() {
 
   return {
     configPath: resolvedPath,
+    createdFromExample,
 
     listenHost: envValue(
       "CLAUDE_OPENCODE_PROXY_HOST",
@@ -196,7 +212,7 @@ function loadConfig() {
       8787,
       {
         integer: true,
-        min: 1,
+        min: 0,
         max: 65535,
       },
     ),
@@ -418,6 +434,12 @@ function loadConfig() {
 
     providers: providersConfig,
 
+    admin: {
+      openOnStart: Boolean(
+        configValue(fileConfig, ["admin", "openOnStart"], false),
+      ),
+    },
+
     routingStatePath: resolveMaybeRelative(
       configValue(
         fileConfig,
@@ -427,6 +449,48 @@ function loadConfig() {
       configDir,
     ),
   };
+}
+
+function openAdminBrowser(url, spawnFn = child_process.spawn) {
+  try {
+    let command;
+    let args;
+
+    if (process.platform === "win32") {
+      command = "cmd";
+      args = ["/c", "start", "", url];
+    } else if (process.platform === "darwin") {
+      command = "open";
+      args = [url];
+    } else {
+      command = "xdg-open";
+      args = [url];
+    }
+
+    const child = spawnFn(command, args, {
+      detached: true,
+      stdio: "ignore",
+    });
+
+    if (child && typeof child.on === "function") {
+      child.on("error", (err) => {
+        console.warn(
+          `[admin] ⚠️  Não foi possível abrir o navegador automaticamente: ${err.message}`,
+        );
+      });
+    }
+
+    if (child && typeof child.unref === "function") {
+      child.unref();
+    }
+
+    return child;
+  } catch (err) {
+    console.warn(
+      `[admin] ⚠️  Não foi possível abrir o navegador automaticamente: ${err.message}`,
+    );
+    return null;
+  }
 }
 
 function normalizeBaseUrl(url) {
@@ -3432,6 +3496,12 @@ function printStartupBanner() {
 
   logRow("Config", CONFIG.configPath);
 
+  if (CONFIG.createdFromExample) {
+    console.log(
+      "   ℹ️  Primeira execução: config.json criado a partir de config.example.json",
+    );
+  }
+
   logRow(
     "Modo",
     mode === "MANUAL" &&
@@ -3523,10 +3593,10 @@ function printStartupBanner() {
 
     if (!hasKey) {
       console.log(
-        `       ⚠️  defina a variável ${
+        `       ⚠️  salve pelo painel /admin ou defina a variável ${
           provider.apiKeyEnv ||
           "(apiKeyEnv não configurada)"
-        } ou adicione pela API administrativa`,
+        }`,
       );
     }
   }
@@ -4694,6 +4764,7 @@ function buildAdminState() {
   }
 
   return {
+    port: CONFIG.port || 8787,
     mode: routerStatus.mode,
     manualProvider: routerStatus.manualProvider,
     normalProvider: routerStatus.normalProvider,
@@ -4797,6 +4868,26 @@ async function handleAdminApi(req, res, url) {
       pathname === "/admin/api/state"
     ) {
       sendAdminJson(res, 200, buildAdminState());
+      return;
+    }
+
+    /* ---- GET /admin/api/presets ---- */
+    if (
+      method === "GET" &&
+      pathname === "/admin/api/presets"
+    ) {
+      const presetsPath = path.join(__dirname, "presets.json");
+      let presets = [];
+      try {
+        const raw = fs.readFileSync(presetsPath, "utf8");
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          presets = parsed;
+        }
+      } catch {
+        /* arquivo ausente ou inválido: retorna lista vazia */
+      }
+      sendAdminJson(res, 200, presets);
       return;
     }
 
@@ -5711,6 +5802,15 @@ function startServer() {
     CONFIG.listenHost,
     () => {
       printStartupBanner();
+
+      const shouldOpen =
+        process.argv.includes("--open") ||
+        Boolean(CONFIG.admin?.openOnStart);
+
+      if (shouldOpen) {
+        const adminUrl = `http://127.0.0.1:${CONFIG.port}/admin?token=${ADMIN_TOKEN}`;
+        openAdminBrowser(adminUrl);
+      }
     },
   );
 
@@ -5741,6 +5841,7 @@ module.exports = {
   loadReasoningCache,
   mapFinishReason,
   normalizeBaseUrl,
+  openAdminBrowser,
   openAiToAnthropic,
   reasoningFromMessage,
   reloadConfig,
